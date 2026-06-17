@@ -20,6 +20,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import logging
+import random
 from typing import Any, Optional
 
 import httpx
@@ -28,11 +29,6 @@ from app.config import settings
 from app.evolution.types import InboundMessage
 
 logger = logging.getLogger(__name__)
-
-# Human-like typing pacing for multi-bubble replies.
-_MIN_TYPING_DELAY = 0.8
-_MAX_TYPING_DELAY = 2.5
-_SECONDS_PER_CHAR = 0.045  # ~22 chars/sec reading+typing illusion
 
 
 class EvolutionClient:
@@ -94,21 +90,27 @@ class EvolutionClient:
     async def send_text_sequence(self, number: str, messages: list[str]) -> None:
         """Send several short bubbles the way a human texts.
 
-        For each bubble: show "composing" presence, pause for a length-based
-        human-like delay, then send the text.
+        For each bubble: compute a randomized human-like pause, keep "composing"
+        presence visible for that whole duration, then send the text.
         """
         for text in messages:
             if not text:
                 continue
-            await self.send_presence(number, "composing", delay_ms=1200)
-            await asyncio.sleep(self._typing_delay(text))
+            pause = self._typing_delay(text)
+            await self.send_presence(number, "composing", delay_ms=int(pause * 1000))
+            await asyncio.sleep(pause)
             await self.send_text(number, text)
 
     @staticmethod
     def _typing_delay(text: str) -> float:
-        """Human-like pause (seconds) proportional to bubble length, clamped."""
-        raw = len(text or "") * _SECONDS_PER_CHAR
-        return max(_MIN_TYPING_DELAY, min(_MAX_TYPING_DELAY, raw))
+        """Randomized human-like pause (seconds): a "thinking" beat + a jittered
+        typing time proportional to bubble length, clamped to a sane window.
+        """
+        base = len(text or "") * settings.typing_per_char
+        think = random.uniform(settings.typing_think_min, settings.typing_think_max)
+        jitter = random.uniform(1 - settings.typing_jitter, 1 + settings.typing_jitter)
+        raw = think + base * jitter
+        return max(settings.typing_min_seconds, min(settings.typing_max_seconds, raw))
 
     # -- presence ----------------------------------------------------------
     async def send_presence(
@@ -128,8 +130,13 @@ class EvolutionClient:
     async def send_audio(self, number: str, audio_url: str) -> dict:
         """Send an inline WhatsApp voice note from a URL.
 
-        Used both for the 45s preview and the full song.
+        Used both for the 45s preview and the full song. Shows a "recording…"
+        presence and pauses a random beat first so the audio doesn't pop in
+        instantly after the preceding text.
         """
+        pause = random.uniform(settings.audio_pre_delay_min, settings.audio_pre_delay_max)
+        await self.send_presence(number, "recording", delay_ms=int(pause * 1000))
+        await asyncio.sleep(pause)
         body = {"number": number, "audio": audio_url}
         return await self._post(f"/message/sendWhatsAppAudio/{self.instance}", body)
 

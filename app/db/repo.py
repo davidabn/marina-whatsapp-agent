@@ -88,6 +88,19 @@ async def _patch(
     return _body(resp)
 
 
+async def _delete(
+    path: str,
+    params: dict[str, str],
+    *,
+    prefer: Optional[str] = None,
+) -> Any:
+    headers = _headers({"Prefer": prefer} if prefer else None)
+    async with httpx.AsyncClient(base_url=_base(), timeout=_TIMEOUT) as client:
+        resp = await client.request("DELETE", path, params=params, headers=headers)
+    _check(resp)
+    return _body(resp)
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -137,6 +150,29 @@ async def get_or_create_contact(
 
 async def set_needs_human(contact_id: str, value: bool = True) -> None:
     await _patch("/contacts", {"id": f"eq.{contact_id}"}, {"needs_human": value})
+
+
+async def find_contacts(needle: str) -> list[dict]:
+    """Contacts whose wa_jid or phone contains `needle` (digits or full jid).
+
+    Used by the reset tool so the caller can pass just a phone number and we
+    recover the exact stored wa_jid (= the LangGraph thread_id).
+    """
+    return await _get(
+        "/contacts",
+        {"or": f"(wa_jid.like.*{needle}*,phone.like.*{needle}*)"},
+    )
+
+
+async def delete_contact(wa_jid: str) -> int:
+    """Delete a contact by exact wa_jid; cascades to all child rows.
+
+    Returns how many contact rows were removed.
+    """
+    rows = await _delete(
+        "/contacts", {"wa_jid": f"eq.{wa_jid}"}, prefer="return=representation"
+    )
+    return len(rows or [])
 
 
 # --- conversations --------------------------------------------------------

@@ -10,7 +10,8 @@ import logging
 import shutil
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
 
 from app.config import settings
 from app.graph import runner
@@ -64,3 +65,24 @@ async def run_due_followups():
     """Manual / cron trigger for the follow-up sweep (alternative to the in-process scheduler)."""
     await runner.run_due_followups()
     return {"ok": True}
+
+
+@app.post("/admin/reset-contact")
+async def reset_contact(request: Request):
+    """Wipe a contact's history (Supabase rows + LangGraph checkpoint) so the
+    number looks brand-new. Guarded by ADMIN_TOKEN. Body/query: {phone|wa_jid}.
+    """
+    token = request.headers.get("x-admin-token") or request.query_params.get("token")
+    if not settings.admin_token or token != settings.admin_token:
+        return JSONResponse({"ok": False, "error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json() if await request.body() else {}
+    except Exception:
+        body = {}
+    needle = (
+        body.get("phone") or body.get("wa_jid")
+        or request.query_params.get("phone") or ""
+    ).strip()
+    if not needle:
+        return JSONResponse({"ok": False, "error": "missing phone/wa_jid"}, status_code=400)
+    return {"ok": True, **await runner.reset_contact(needle)}

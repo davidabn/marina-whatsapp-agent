@@ -25,6 +25,20 @@ class Settings(BaseSettings):
     business_hours_end: int = 21
     max_free_regenerations: int = 1
 
+    # Admin / testing
+    admin_token: str = ""        # gate for POST /admin/reset-contact (empty => endpoint 401s)
+    debug_reset_word: str = ""   # secret WhatsApp word that wipes that chat (empty => disabled)
+
+    # Outbound pacing (humanized typing). Tune via env without code changes.
+    typing_min_seconds: float = 2.5
+    typing_max_seconds: float = 8.0
+    typing_per_char: float = 0.05
+    typing_think_min: float = 0.8
+    typing_think_max: float = 2.2
+    typing_jitter: float = 0.35           # ±35% on the typing component
+    audio_pre_delay_min: float = 1.8      # "recording…" pause before each audio
+    audio_pre_delay_max: float = 4.0
+
     # OpenAI (LLM + STT)
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"

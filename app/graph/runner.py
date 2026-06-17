@@ -114,6 +114,65 @@ async def teardown() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Reset a contact (testing): wipe BOTH the business rows and the checkpointer
+# --------------------------------------------------------------------------- #
+async def reset_thread(jid: str) -> bool:
+    """Drop the LangGraph conversation memory for a thread (= wa_jid).
+
+    Removes checkpoints/checkpoint_writes/checkpoint_blobs for this thread_id.
+    Tolerates a missing/empty thread. Returns True if the delete ran.
+    """
+    if _saver is None:
+        return False
+    try:
+        await _saver.adelete_thread(jid)
+        return True
+    except Exception:  # noqa: BLE001 — nonexistent thread is fine
+        logger.warning("reset_thread failed for %s", jid, exc_info=True)
+        return False
+
+
+async def reset_contact(needle: str) -> dict:
+    """Make a number look brand-new: delete its Supabase rows (cascade) and its
+    LangGraph checkpoint(s). `needle` may be a phone (digits) or a full wa_jid.
+    """
+    matched: list[str] = []
+    supabase_deleted = 0
+    threads_cleared = 0
+    try:
+        rows = await repo.find_contacts(needle)
+    except Exception:  # noqa: BLE001
+        logger.exception("find_contacts failed")
+        rows = []
+
+    for row in rows:
+        jid = row.get("wa_jid")
+        if not jid:
+            continue
+        matched.append(jid)
+        try:
+            supabase_deleted += await repo.delete_contact(jid)
+        except Exception:  # noqa: BLE001
+            logger.exception("delete_contact failed for %s", jid)
+        if await reset_thread(jid):
+            threads_cleared += 1
+
+    # No contact row matched — still try to clear a stray checkpoint by jid.
+    if not matched:
+        digits = "".join(ch for ch in needle if ch.isdigit())
+        jid = needle if "@" in needle else (f"{digits}@s.whatsapp.net" if digits else "")
+        if jid and await reset_thread(jid):
+            threads_cleared += 1
+            matched.append(jid)
+
+    return {
+        "matched": matched,
+        "supabase_deleted": supabase_deleted,
+        "threads_cleared": threads_cleared,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Core graph invocation (reused by all entrypoints)
 # --------------------------------------------------------------------------- #
 async def _invoke(
@@ -227,6 +286,21 @@ async def handle_inbound(inbound: InboundMessage) -> None:
             return
     except Exception:  # noqa: BLE001
         logger.exception("message_exists check failed")
+
+    # Debug-only: a secret word from the tester wipes this chat's history so the
+    # next "oi" looks like a brand-new first contact. Runs before contact/logging
+    # so the reset command itself doesn't recreate the row. Disabled when unset.
+    if settings.debug_reset_word and (inbound.text or "").strip().lower() == \
+            settings.debug_reset_word.strip().lower():
+        result = await reset_contact(inbound.jid)
+        logger.info("debug reset for %s: %s", inbound.jid, result)
+        try:
+            await get_evolution().send_text(
+                inbound.phone, "pronto, histórico zerado 🧹 manda um oi pra recomeçar 💛"
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("reset confirm send failed")
+        return
 
     contact = await repo.get_or_create_contact(
         inbound.jid, push_name=inbound.push_name, phone=inbound.phone
