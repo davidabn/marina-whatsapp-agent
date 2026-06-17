@@ -1,0 +1,71 @@
+"""Marina WhatsApp Agent — FastAPI entrypoint.
+
+Lifespan brings up the runner (DB pool, LangGraph + checkpointer, Evolution +
+Mercado Pago clients) and the follow-up scheduler. Webhooks are thin: they parse
++ verify and hand off to the runner in the background.
+"""
+from __future__ import annotations
+
+import logging
+import shutil
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI
+
+from app.config import settings
+from app.graph import runner
+from app.scheduler.followups import start_scheduler, stop_scheduler
+from app.webhooks import evolution as evolution_webhook
+from app.webhooks import kie as kie_webhook
+from app.webhooks import payments as payments_webhook
+
+logging.basicConfig(
+    level=getattr(logging, settings.log_level.upper(), logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+log = logging.getLogger("marina")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    log.info("starting marina agent…")
+    await runner.setup()
+    start_scheduler()
+    try:
+        yield
+    finally:
+        log.info("shutting down…")
+        stop_scheduler()
+        await runner.teardown()
+
+
+app = FastAPI(title="Marina WhatsApp Agent", lifespan=lifespan)
+app.include_router(evolution_webhook.router)
+app.include_router(kie_webhook.router)
+app.include_router(payments_webhook.router)
+
+
+@app.get("/health")
+async def health():
+    ffmpeg_ok = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
+    db_ok = True
+    try:
+        from app.db import repo
+        async with repo.pool().connection() as conn:
+            await conn.execute("select 1")
+    except Exception:  # noqa: BLE001
+        db_ok = False
+    healthy = ffmpeg_ok and db_ok
+    return {"status": "ok" if healthy else "degraded", "ffmpeg": ffmpeg_ok, "db": db_ok}
+
+
+@app.get("/")
+async def root():
+    return {"service": "marina-whatsapp-agent"}
+
+
+@app.post("/tasks/run-due-followups")
+async def run_due_followups():
+    """Manual / cron trigger for the follow-up sweep (alternative to the in-process scheduler)."""
+    await runner.run_due_followups()
+    return {"ok": True}

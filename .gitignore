@@ -1,0 +1,22 @@
+# Secrets
+.env
+.env.local
+*.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Media scratch
+output/
+tmp/
+*.mp3
+*.mp4
+*.ogg
+*.wav
