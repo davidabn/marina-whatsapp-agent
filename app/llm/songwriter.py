@@ -5,8 +5,9 @@ KIE/Suno request whose lyrics follow the invariants distilled from
 music-pipeline/prompts/*.json:
 
 - pt-BR lyrics WITHOUT accents
-- chorus FIRST, intro under 3 seconds
-- the recipient's NAME repeated in the chorus and verses
+- opens with a short verse (NO name), intro under 3 seconds
+- the recipient's NAME appears ONLY in the chorus (never at the start), with a
+  full verse right after the first chorus
 - weave in special_phrases / nickname / special_date
 - vocalGender = the SINGER/BUYER's gender (brief.singer_gender), NOT the recipient
 
@@ -46,14 +47,18 @@ _EXEMPLARS: list[dict] = [
         "style": (
             "brazilian pop romantic acoustic indie folk, warm female voice singing "
             "to husband, BPM 100, acoustic guitar strumming, ukulele, soft claps, "
-            "very short intro under 3 seconds then chorus first, no autotune"
+            "very short intro under 3 seconds then voice immediately, no autotune"
         ),
         "prompt": (
-            "[Chorus - opens song, bright acoustic strum immediately]\n"
+            "[Verse 1 - opens song, bright acoustic strum immediately, no name]\n"
+            "A gente se conheceu sem esperar\n"
+            "E aqui estamos, anos depois, dancando na cozinha\n\n"
+            "[Chorus]\n"
             "Lucas, oito anos e tudo continua\nLucas, voce me faz rir do nada\n"
             "Cada dia ao seu lado e leve e e simples\nLucas, voce e a minha casa\n\n"
-            "[Verse 1]\nA gente se conheceu sem esperar\n"
-            "E aqui estamos, anos depois, dancando na cozinha"
+            "[Verse 2]\n"
+            "Nos dias dificeis voce nao solta a minha mao\n"
+            "Na correria do mundo voce e o meu chao"
         ),
     },
     {
@@ -67,12 +72,16 @@ _EXEMPLARS: list[dict] = [
             "BPM 80"
         ),
         "prompt": (
-            "[Verse 1 - opens song, violao dedilhado, voice clear and strong]\n"
+            "[Verse 1 - opens song, violao dedilhado, voice clear and strong, no name]\n"
             "Tem uma mulher que mudou a minha historia\n"
-            "Minha mae Rosangela, minha rainha\n\n"
+            "Foi quem me ensinou a nunca desistir\n\n"
             "[Chorus - full instrumentation, vocal na frente]\n"
-            "Mae amorosa, mae carinhosa\nRosangela, minha vida toda\n"
-            "Minha rainha, meu porto, meu ceu"
+            "Mae amorosa, mae carinhosa\n"
+            "Rosangela, minha vida toda\n"
+            "Rosangela, minha rainha, meu porto, meu ceu\n\n"
+            "[Verse 2]\n"
+            "Lembro do cheiro do cafe de manha\n"
+            "Da fe que voce nunca deixou faltar"
         ),
     },
     {
@@ -82,12 +91,19 @@ _EXEMPLARS: list[dict] = [
         "style": (
             "brazilian pagode samba romantic, warm male lead voice with light backing "
             "vocals, BPM 98, cavaquinho, pandeiro, surdo, violao sete cordas, very short "
-            "cavaquinho intro under 3 seconds then chorus immediately"
+            "cavaquinho intro under 3 seconds then voice immediately"
         ),
         "prompt": (
-            "[Chorus - opens song, cavaquinho lick into full samba groove immediately]\n"
-            "Ana, na roda de samba te encontrei\nAna, voce mexeu comigo de uma vez\n"
-            "Ana, voce e a minha melodia"
+            "[Verse 1 - opens song, cavaquinho lick into full samba groove immediately, no name]\n"
+            "Na roda de samba eu te encontrei\n"
+            "Voce mexeu comigo de uma vez\n\n"
+            "[Chorus]\n"
+            "Ana, voce e a minha melodia\n"
+            "Ana, meu samba de toda alegria\n"
+            "Ana, contigo a vida e cantoria\n\n"
+            "[Verse 2]\n"
+            "Cada batida do pandeiro lembra voce\n"
+            "Cada acorde e um pedaco do nosso bem"
         ),
     },
     {
@@ -100,9 +116,16 @@ _EXEMPLARS: list[dict] = [
             "immediately"
         ),
         "prompt": (
-            "[Chorus - opens song, piano arpeggio leading into voice immediately]\n"
-            "Juliana, do meu coracao\nJuliana, minha calma na tempestade\n"
-            "Juliana, contigo quero sempre estar"
+            "[Verse 1 - opens song, piano arpeggio leading into voice immediately, no name]\n"
+            "No meio da tempestade voce chegou\n"
+            "Trouxe a calma que faltava no meu coracao\n\n"
+            "[Chorus]\n"
+            "Juliana, do meu coracao\n"
+            "Juliana, minha calma na tempestade\n"
+            "Juliana, contigo quero sempre estar\n\n"
+            "[Verse 2]\n"
+            "Cada amanhecer ao seu lado vira cancao\n"
+            "Cada silencio nosso ja e paz"
         ),
     },
     {
@@ -112,13 +135,19 @@ _EXEMPLARS: list[dict] = [
         "style": (
             "brazilian sertanejo gospel acoustic ballad, intimate emotional male voice, "
             "BPM 75, acoustic guitar fingerpicking, soft piano, very short intro under 3 "
-            "seconds then chorus immediately, deep religious gratitude"
+            "seconds then voice immediately, deep religious gratitude"
         ),
         "prompt": (
-            "[Chorus - opens song, warm acoustic + soft strings immediately]\n"
+            "[Verse 1 - opens song, warm acoustic + soft strings immediately, no name]\n"
+            "Foi Deus quem cruzou o meu caminho com o seu\n"
+            "Uma bencao que eu nem sei se mereci\n\n"
+            "[Chorus]\n"
             "Maria, foi Deus quem te trouxe pra mim\n"
             "Maria, minha bencao do amanhecer\n"
-            "Maria, contigo eu quero envelhecer"
+            "Maria, contigo eu quero envelhecer\n\n"
+            "[Verse 2]\n"
+            "Na oracao eu agradeco por voce\n"
+            "Cada dia a nossa fe so faz crescer"
         ),
     },
 ]
@@ -154,14 +183,18 @@ Voce e um compositor de musicas personalizadas em portugues do Brasil para a Sun
 INVARIANTES OBRIGATORIAS (sempre, sem excecao):
 1. A letra (campo prompt) e em portugues do Brasil SEM ACENTOS (nada de a, e, ~). \
 Escreva 'coracao' e nao 'coracao' com til, 'voce' e nao 'voce' com acento, etc.
-2. A musica COMECA PELO REFRAO ([Chorus]) ou por um verso curtissimo que ja entra \
-cantando. A introducao instrumental tem MENOS DE 3 SEGUNDOS. Marque isso na primeira \
-secao (ex: '[Chorus - opens song, ... immediately]').
-3. Repita o NOME do presenteado no refrao E nos versos, varias vezes.
+2. A musica ja entra CANTANDO (introducao instrumental MENOS DE 3 SEGUNDOS), mas \
+ABRE POR UM VERSO curto que NAO contem o nome — o nome NUNCA aparece no comecinho \
+da musica. Marque a primeira secao (ex: '[Verse 1 - opens song, ... immediately, no name]').
+3. O NOME do presenteado aparece SOMENTE no refrao ([Chorus]) — nunca nos versos, \
+nunca na ponte, nunca na abertura. No refrao, repita o nome. O PRIMEIRO refrao (onde \
+o nome aparece) deve chegar cedo, de preferencia dentro dos primeiros ~45 segundos, e \
+logo depois dele deve vir um VERSO completo.
 4. Costure organicamente as special_phrases, o apelido (nickname) e a data \
 especial (special_date) na letra quando existirem.
-5. Estrutura tipica: [Chorus] -> [Verse 1] -> [Pre-Chorus] -> [Chorus] -> [Verse 2] \
--> [Bridge] -> [Chorus] -> [Outro]. Use marcadores em ingles entre colchetes.
+5. Estrutura tipica: [Verse 1] (sem nome) -> [Chorus] (com o nome) -> [Verse 2] (sem \
+nome) -> [Pre-Chorus] -> [Chorus] -> [Bridge] -> [Chorus] -> [Outro]. Use marcadores \
+em ingles entre colchetes.
 6. vocalGender = o genero de quem CANTA (o comprador que presenteia), fornecido no \
 brief. NAO e o genero do presenteado.
 7. title sempre no formato 'Para <nome do presenteado>'.
