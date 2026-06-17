@@ -234,6 +234,11 @@ async def write_song(
             # stray model value can never break the KIE contract.
             payload = draft.model_copy(
                 update={
+                    # We always author the full lyrics, so custom mode is an
+                    # invariant: it lets `prompt` be the exact lyrics (up to 5000
+                    # chars). A stray `customMode:false` from the model caps the
+                    # prompt at 500 chars and KIE rejects it with a 422.
+                    "custom_mode": True,
                     "title": f"Para {recipient}",
                     "style": style_resolved,
                     "vocal_gender": vocal_gender,
