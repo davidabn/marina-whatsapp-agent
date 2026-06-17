@@ -186,12 +186,12 @@ async def _flush(
             if item.get("kind") == "text":
                 await repo.log_message(
                     conversation_id=conversation_id, contact_id=contact_id,
-                    direction="outbound", kind="text", content=item.get("text"),
+                    direction="out", kind="text", content=item.get("text"),
                 )
             else:
                 await repo.log_message(
                     conversation_id=conversation_id, contact_id=contact_id,
-                    direction="outbound", kind="audio",
+                    direction="out", kind="audio",
                     content=item.get("caption"), media_url=item.get("url"),
                 )
         except Exception:  # noqa: BLE001
@@ -247,7 +247,7 @@ async def handle_inbound(inbound: InboundMessage) -> None:
 
     try:
         await repo.log_message(
-            conversation_id=conv_id, contact_id=contact_id, direction="inbound",
+            conversation_id=conv_id, contact_id=contact_id, direction="in",
             kind=inbound.kind, content=text, wa_message_id=inbound.message_id,
             raw=inbound.raw,
         )
