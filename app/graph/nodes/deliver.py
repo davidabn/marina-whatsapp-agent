@@ -52,8 +52,10 @@ async def deliver(state: dict) -> dict:
     if full_url:
         msgs += emit_audio(state, full_url, caption="A musica completa 🎶")
     msgs += emit_text(state, [f"Aqui ela, completinha, pra ti e pro {name} pra sempre 🎶"])
+    # Lyrics are NOT dumped by default — only on explicit request (router handles
+    # "manda a letra"). Here we just let them know they can ask.
     if full:
-        msgs += emit_text(state, [f"E a letra inteira:\n\n{full}"])
+        msgs += emit_text(state, ["Se quiser a letra escrita pra acompanhar, e so me pedir 💛"])
     msgs += emit_text(
         state,
         [

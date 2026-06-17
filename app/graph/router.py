@@ -20,11 +20,25 @@ reads to pick the target node (or END).
 """
 from __future__ import annotations
 
+import re
+
 from app.config import settings
 from app.graph.nodes import DELETE, emit_text, patch_extra
 from app.graph.state import Stage
 from app.llm import extract
 from app.llm.extract import Intent
+from app.music import lyrics
+
+# Customer explicitly asking for the WRITTEN lyrics (a request, not an objection
+# like "nao gostei da letra" — those carry no request verb and stay with the
+# intent classifier). Only answered once the song's lyrics actually exist.
+_WANTS_LYRICS = re.compile(
+    r"\b(?:manda|mandar|me\s+manda|envia|enviar|me\s+envia|passa|passar|"
+    r"quero|queria|ver|cad[eê]|tem)\b[^?.!\n]{0,25}\bletra\b"
+    r"|\bletra\b[^?.!\n]{0,25}(?:escrit|por\s+escrito|pra\s+ler|pra\s+acompanhar)"
+    r"|^\s*(?:a\s+)?letra\s+(?:por\s+favor|pf|completa|inteira|escrita)\b",
+    re.IGNORECASE,
+)
 
 # --------------------------------------------------------------------------- #
 # Scripted recovery copy (verbatim from sales/whatsapp-script.md, section 4)
@@ -129,6 +143,14 @@ async def router(state: dict) -> dict:
     inbound = (state.get("inbound_text") or "").strip()
     if not inbound:
         return _route(state, "end")
+
+    # Customer explicitly asks for the written lyrics -> send them and stay put.
+    # We don't deliver lyrics by default, only on request (and only once they exist).
+    if _WANTS_LYRICS.search(inbound):
+        prompt = (state.get("extra") or {}).get("lyrics_prompt") or ""
+        full = lyrics.full_lyrics(prompt) if prompt else ""
+        if full:
+            return _emit_stay(state, ["Claro 💛 aqui a letra:", full])
 
     intent = await extract.classify_intent(inbound, stage)
 
