@@ -1,64 +1,109 @@
 """Async data-access layer for the business tables (db/migrations/0001_init.sql).
 
-Single psycopg async pool, shared with the app lifespan. All functions take a
-connection from the pool. This is the ONLY module that writes SQL for business
-tables — nodes/webhooks call these helpers, never raw SQL.
+Talks to self-hosted Supabase via its PostgREST HTTP gateway (kong) — the
+internal Postgres is network-unreachable from the app, but the REST endpoint is.
+Every call is stateless: it opens a fresh httpx client carrying the service-role
+key (same style as app/music/kie.py). This is the ONLY module that touches the
+business tables — nodes/webhooks call these helpers, never PostgREST directly.
+
+NOTE: the LangGraph checkpointer is unrelated to this module — it keeps using a
+direct Postgres connection (settings.supabase_db_url) in app/graph/runner.py.
 """
 from __future__ import annotations
 
-import json
-from pathlib import Path
+from datetime import datetime, timezone
 from typing import Any, Optional
 
-from psycopg.rows import dict_row
-from psycopg_pool import AsyncConnectionPool
+import httpx
 
 from app.config import settings
 
-_pool: Optional[AsyncConnectionPool] = None
+_TIMEOUT = 30.0
 
 
-async def init_pool() -> AsyncConnectionPool:
-    global _pool
-    if _pool is None:
-        _pool = AsyncConnectionPool(
-            conninfo=settings.supabase_db_url,
-            min_size=1,
-            max_size=10,
-            kwargs={"row_factory": dict_row, "autocommit": True},
-            open=False,
-        )
-        await _pool.open()
-    return _pool
+# --- low-level PostgREST plumbing ----------------------------------------
+def _base() -> str:
+    return f"{settings.supabase_url}/rest/v1"
 
 
-async def close_pool() -> None:
-    global _pool
-    if _pool is not None:
-        await _pool.close()
-        _pool = None
+def _headers(extra: Optional[dict[str, str]] = None) -> dict[str, str]:
+    h = {
+        "apikey": settings.supabase_service_role_key,
+        "Authorization": f"Bearer {settings.supabase_service_role_key}",
+        "Content-Type": "application/json",
+    }
+    if extra:
+        h.update(extra)
+    return h
 
 
-def pool() -> AsyncConnectionPool:
-    if _pool is None:
-        raise RuntimeError("DB pool not initialized; call init_pool() at startup.")
-    return _pool
+def _check(resp: httpx.Response) -> None:
+    """PostgREST returns 2xx on success; raise a clear RuntimeError otherwise."""
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        raise RuntimeError(
+            f"PostgREST error {resp.status_code} on "
+            f"{resp.request.method} {resp.request.url}: {resp.text}"
+        ) from exc
 
 
-_MIGRATIONS_DIR = Path(__file__).parent / "migrations"
+def _body(resp: httpx.Response) -> Any:
+    """Parsed JSON, or None for empty bodies (204 / return=minimal)."""
+    return resp.json() if resp.content else None
 
 
-async def apply_migrations() -> None:
-    """Apply business-table SQL migrations on boot.
+async def _get(path: str, params: dict[str, str]) -> list[dict]:
+    async with httpx.AsyncClient(base_url=_base(), timeout=_TIMEOUT) as client:
+        resp = await client.get(path, params=params, headers=_headers())
+    _check(resp)
+    return resp.json()
 
-    Idempotent: every statement is `create ... if not exists`, so running this
-    on every startup is safe. Lets the app self-provision its schema against the
-    internal Postgres without a separate manual migration step.
-    """
-    files = sorted(_MIGRATIONS_DIR.glob("*.sql"))
-    async with pool().connection() as conn:
-        for f in files:
-            await conn.execute(f.read_text())
+
+async def _post(
+    path: str,
+    body: Any,
+    *,
+    params: Optional[dict[str, str]] = None,
+    prefer: Optional[str] = None,
+) -> Any:
+    headers = _headers({"Prefer": prefer} if prefer else None)
+    async with httpx.AsyncClient(base_url=_base(), timeout=_TIMEOUT) as client:
+        resp = await client.post(path, params=params, json=body, headers=headers)
+    _check(resp)
+    return _body(resp)
+
+
+async def _patch(
+    path: str,
+    params: dict[str, str],
+    body: Any,
+    *,
+    prefer: Optional[str] = None,
+) -> Any:
+    headers = _headers({"Prefer": prefer} if prefer else None)
+    async with httpx.AsyncClient(base_url=_base(), timeout=_TIMEOUT) as client:
+        resp = await client.patch(path, params=params, json=body, headers=headers)
+    _check(resp)
+    return _body(resp)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _iso(value: Any) -> str:
+    return value.isoformat() if isinstance(value, datetime) else str(value)
+
+
+async def healthcheck() -> bool:
+    """Ping PostgREST for /health. True if the gateway answers below 500."""
+    try:
+        async with httpx.AsyncClient(base_url=_base(), timeout=_TIMEOUT) as client:
+            resp = await client.get("/", headers=_headers())
+        return resp.status_code < 500
+    except Exception:  # noqa: BLE001
+        return False
 
 
 # --- contacts -------------------------------------------------------------
@@ -68,69 +113,78 @@ async def get_or_create_contact(
     phone: Optional[str] = None,
     source_ad: Optional[str] = None,
 ) -> dict[str, Any]:
-    async with pool().connection() as conn:
-        row = await (await conn.execute(
-            """
-            insert into contacts (wa_jid, push_name, phone, source_ad)
-            values (%s, %s, %s, %s)
-            on conflict (wa_jid) do update
-                set last_seen_at = now(),
-                    push_name = coalesce(excluded.push_name, contacts.push_name)
-            returning *
-            """,
-            (wa_jid, push_name, phone, source_ad),
-        )).fetchone()
-        return row
+    rows = await _get("/contacts", {"wa_jid": f"eq.{wa_jid}", "limit": "1"})
+    if rows:
+        existing = rows[0]
+        # Mirror `on conflict do update set last_seen_at = now(),
+        # push_name = coalesce(excluded.push_name, contacts.push_name)`:
+        # only overwrite push_name when a new (non-null) one is supplied.
+        changes: dict[str, Any] = {"last_seen_at": _now_iso()}
+        if push_name is not None:
+            changes["push_name"] = push_name
+        updated = await _patch(
+            "/contacts", {"wa_jid": f"eq.{wa_jid}"}, changes,
+            prefer="return=representation",
+        )
+        return updated[0] if updated else existing
+    created = await _post(
+        "/contacts",
+        {"wa_jid": wa_jid, "push_name": push_name, "phone": phone, "source_ad": source_ad},
+        prefer="return=representation",
+    )
+    return created[0]
 
 
 async def set_needs_human(contact_id: str, value: bool = True) -> None:
-    async with pool().connection() as conn:
-        await conn.execute(
-            "update contacts set needs_human = %s where id = %s", (value, contact_id)
-        )
+    await _patch("/contacts", {"id": f"eq.{contact_id}"}, {"needs_human": value})
 
 
 # --- conversations --------------------------------------------------------
 async def get_or_create_conversation(contact_id: str) -> dict[str, Any]:
-    async with pool().connection() as conn:
-        existing = await (await conn.execute(
-            "select * from conversations where contact_id = %s order by created_at desc limit 1",
-            (contact_id,),
-        )).fetchone()
-        if existing:
-            return existing
-        return await (await conn.execute(
-            "insert into conversations (contact_id) values (%s) returning *",
-            (contact_id,),
-        )).fetchone()
+    rows = await _get(
+        "/conversations",
+        {"contact_id": f"eq.{contact_id}", "order": "created_at.desc", "limit": "1"},
+    )
+    if rows:
+        return rows[0]
+    created = await _post(
+        "/conversations", {"contact_id": contact_id}, prefer="return=representation"
+    )
+    return created[0]
 
 
 async def get_conversation_by_jid(wa_jid: str) -> Optional[dict[str, Any]]:
-    async with pool().connection() as conn:
-        return await (await conn.execute(
-            """
-            select c.* from conversations c
-            join contacts ct on ct.id = c.contact_id
-            where ct.wa_jid = %s
-            order by c.created_at desc limit 1
-            """,
-            (wa_jid,),
-        )).fetchone()
+    contacts = await _get(
+        "/contacts", {"wa_jid": f"eq.{wa_jid}", "select": "id", "limit": "1"}
+    )
+    if not contacts:
+        return None
+    rows = await _get(
+        "/conversations",
+        {"contact_id": f"eq.{contacts[0]['id']}", "order": "created_at.desc", "limit": "1"},
+    )
+    return rows[0] if rows else None
 
 
 async def get_jid_by_conversation(conversation_id: str) -> Optional[str]:
     """Resolve the WhatsApp JID for a conversation (used by webhook/scheduler
     resume paths, which only have a conversation_id)."""
-    async with pool().connection() as conn:
-        row = await (await conn.execute(
-            """
-            select ct.wa_jid from contacts ct
-            join conversations c on c.contact_id = ct.id
-            where c.id = %s
-            """,
-            (conversation_id,),
-        )).fetchone()
-        return row["wa_jid"] if row else None
+    rows = await _get(
+        "/conversations",
+        {
+            "id": f"eq.{conversation_id}",
+            "select": "contact_id,contacts(wa_jid)",
+            "limit": "1",
+        },
+    )
+    if not rows:
+        return None
+    contact = rows[0].get("contacts")
+    if isinstance(contact, list):
+        contact = contact[0] if contact else None
+    if not contact:
+        return None
+    return contact.get("wa_jid")
 
 
 async def update_conversation(
@@ -141,32 +195,27 @@ async def update_conversation(
     chosen_variant: Optional[str] = None,
     regen_count: Optional[int] = None,
 ) -> None:
-    sets, params = [], []
+    changes: dict[str, Any] = {}
     if stage is not None:
-        sets.append("stage = %s"); params.append(stage)
+        changes["stage"] = stage
     if brief is not None:
-        sets.append("brief = %s"); params.append(json.dumps(brief))
+        changes["brief"] = brief
     if chosen_variant is not None:
-        sets.append("chosen_variant = %s"); params.append(chosen_variant)
+        changes["chosen_variant"] = chosen_variant
     if regen_count is not None:
-        sets.append("regen_count = %s"); params.append(regen_count)
-    if not sets:
+        changes["regen_count"] = regen_count
+    if not changes:
         return
-    sets.append("updated_at = now()")
-    params.append(conversation_id)
-    async with pool().connection() as conn:
-        await conn.execute(
-            f"update conversations set {', '.join(sets)} where id = %s", params
-        )
+    changes["updated_at"] = _now_iso()
+    await _patch("/conversations", {"id": f"eq.{conversation_id}"}, changes)
 
 
 # --- messages -------------------------------------------------------------
 async def message_exists(wa_message_id: str) -> bool:
-    async with pool().connection() as conn:
-        row = await (await conn.execute(
-            "select 1 from messages where wa_message_id = %s", (wa_message_id,)
-        )).fetchone()
-        return row is not None
+    rows = await _get(
+        "/messages", {"wa_message_id": f"eq.{wa_message_id}", "select": "id", "limit": "1"}
+    )
+    return bool(rows)
 
 
 async def log_message(
@@ -181,40 +230,58 @@ async def log_message(
     transcript: Optional[str] = None,
     raw: Optional[dict] = None,
 ) -> None:
-    async with pool().connection() as conn:
-        await conn.execute(
-            """
-            insert into messages
-                (conversation_id, contact_id, direction, kind, content,
-                 wa_message_id, media_url, transcript, raw)
-            values (%s,%s,%s,%s,%s,%s,%s,%s,%s)
-            on conflict (wa_message_id) do nothing
-            """,
-            (conversation_id, contact_id, direction, kind, content,
-             wa_message_id, media_url, transcript,
-             json.dumps(raw) if raw is not None else None),
-        )
+    # Mirror `on conflict (wa_message_id) do nothing` via an ignore-duplicates
+    # upsert keyed on wa_message_id (NULL ids never conflict, so they insert).
+    await _post(
+        "/messages",
+        {
+            "conversation_id": conversation_id,
+            "contact_id": contact_id,
+            "direction": direction,
+            "kind": kind,
+            "content": content,
+            "wa_message_id": wa_message_id,
+            "media_url": media_url,
+            "transcript": transcript,
+            "raw": raw,
+        },
+        params={"on_conflict": "wa_message_id"},
+        prefer="resolution=ignore-duplicates,return=minimal",
+    )
 
 
 # --- generations ----------------------------------------------------------
 async def create_generation(conversation_id: str, kie_task_id: str, payload: dict) -> dict:
-    async with pool().connection() as conn:
-        return await (await conn.execute(
-            """
-            insert into generations (conversation_id, kie_task_id, payload, status)
-            values (%s,%s,%s,'PENDING')
-            on conflict (kie_task_id) do update set payload = excluded.payload
-            returning *
-            """,
-            (conversation_id, kie_task_id, json.dumps(payload)),
-        )).fetchone()
+    # `on conflict (kie_task_id) do update set payload = excluded.payload`:
+    # only the payload changes on conflict, so GET-then-PATCH (not a full upsert
+    # which would also reset status/conversation_id).
+    existing = await _get(
+        "/generations", {"kie_task_id": f"eq.{kie_task_id}", "limit": "1"}
+    )
+    if existing:
+        updated = await _patch(
+            "/generations", {"kie_task_id": f"eq.{kie_task_id}"}, {"payload": payload},
+            prefer="return=representation",
+        )
+        return updated[0] if updated else existing[0]
+    created = await _post(
+        "/generations",
+        {
+            "conversation_id": conversation_id,
+            "kie_task_id": kie_task_id,
+            "payload": payload,
+            "status": "PENDING",
+        },
+        prefer="return=representation",
+    )
+    return created[0]
 
 
 async def get_generation_by_task(kie_task_id: str) -> Optional[dict]:
-    async with pool().connection() as conn:
-        return await (await conn.execute(
-            "select * from generations where kie_task_id = %s", (kie_task_id,)
-        )).fetchone()
+    rows = await _get(
+        "/generations", {"kie_task_id": f"eq.{kie_task_id}", "limit": "1"}
+    )
+    return rows[0] if rows else None
 
 
 async def update_generation(
@@ -227,93 +294,106 @@ async def update_generation(
     error: Optional[str] = None,
     completed: bool = False,
 ) -> None:
-    sets, params = [], []
+    changes: dict[str, Any] = {}
     if status is not None:
-        sets.append("status = %s"); params.append(status)
+        changes["status"] = status
     if variants is not None:
-        sets.append("variants = %s"); params.append(json.dumps(variants))
+        changes["variants"] = variants
     if preview_url is not None:
-        sets.append("preview_url = %s"); params.append(preview_url)
+        changes["preview_url"] = preview_url
     if full_url is not None:
-        sets.append("full_url = %s"); params.append(full_url)
+        changes["full_url"] = full_url
     if error is not None:
-        sets.append("error = %s"); params.append(error)
+        changes["error"] = error
     if completed:
-        sets.append("completed_at = now()")
-    if not sets:
+        changes["completed_at"] = _now_iso()
+    if not changes:
         return
-    params.append(kie_task_id)
-    async with pool().connection() as conn:
-        await conn.execute(
-            f"update generations set {', '.join(sets)} where kie_task_id = %s", params
-        )
+    await _patch("/generations", {"kie_task_id": f"eq.{kie_task_id}"}, changes)
 
 
 # --- orders ---------------------------------------------------------------
 async def create_order(conversation_id: str, amount_cents: int,
                        mp_payment_id: str, pix_copia_cola: str,
                        txid: Optional[str] = None) -> dict:
-    async with pool().connection() as conn:
-        return await (await conn.execute(
-            """
-            insert into orders (conversation_id, amount_cents, mp_payment_id, pix_copia_cola, txid)
-            values (%s,%s,%s,%s,%s)
-            on conflict (mp_payment_id) do update set pix_copia_cola = excluded.pix_copia_cola
-            returning *
-            """,
-            (conversation_id, amount_cents, mp_payment_id, pix_copia_cola, txid),
-        )).fetchone()
+    # `on conflict (mp_payment_id) do update set pix_copia_cola = excluded...`:
+    # only pix_copia_cola changes on conflict — GET-then-PATCH.
+    existing = await _get(
+        "/orders", {"mp_payment_id": f"eq.{mp_payment_id}", "limit": "1"}
+    )
+    if existing:
+        updated = await _patch(
+            "/orders", {"mp_payment_id": f"eq.{mp_payment_id}"},
+            {"pix_copia_cola": pix_copia_cola},
+            prefer="return=representation",
+        )
+        return updated[0] if updated else existing[0]
+    created = await _post(
+        "/orders",
+        {
+            "conversation_id": conversation_id,
+            "amount_cents": amount_cents,
+            "mp_payment_id": mp_payment_id,
+            "pix_copia_cola": pix_copia_cola,
+            "txid": txid,
+        },
+        prefer="return=representation",
+    )
+    return created[0]
 
 
 async def get_order_by_mp_payment(mp_payment_id: str) -> Optional[dict]:
-    async with pool().connection() as conn:
-        return await (await conn.execute(
-            "select * from orders where mp_payment_id = %s", (mp_payment_id,)
-        )).fetchone()
+    rows = await _get(
+        "/orders", {"mp_payment_id": f"eq.{mp_payment_id}", "limit": "1"}
+    )
+    return rows[0] if rows else None
 
 
 async def mark_order_paid(mp_payment_id: str) -> Optional[dict]:
-    """Idempotent: only flips pending->paid once; returns the updated row."""
-    async with pool().connection() as conn:
-        return await (await conn.execute(
-            """
-            update orders set status = 'paid', paid_at = now()
-            where mp_payment_id = %s and status <> 'paid'
-            returning *
-            """,
-            (mp_payment_id,),
-        )).fetchone()
+    """Idempotent flip pending->paid. Returns the row ONLY if THIS call flipped
+    it; None if it was already paid (conditional update matched no row). The
+    caller delivers exactly once on this — a duplicate Mercado Pago webhook gets
+    None and stops, preventing double delivery."""
+    updated = await _patch(
+        "/orders",
+        {"mp_payment_id": f"eq.{mp_payment_id}", "status": "neq.paid"},
+        {"status": "paid", "paid_at": _now_iso()},
+        prefer="return=representation",
+    )
+    return updated[0] if updated else None
 
 
 # --- followups ------------------------------------------------------------
 async def schedule_followup(conversation_id: str, kind: str, run_at) -> None:
-    async with pool().connection() as conn:
-        await conn.execute(
-            "insert into followups (conversation_id, kind, run_at) values (%s,%s,%s)",
-            (conversation_id, kind, run_at),
-        )
+    await _post(
+        "/followups",
+        {"conversation_id": conversation_id, "kind": kind, "run_at": _iso(run_at)},
+        prefer="return=minimal",
+    )
 
 
 async def due_followups(now) -> list[dict]:
-    async with pool().connection() as conn:
-        return await (await conn.execute(
-            "select * from followups where status = 'scheduled' and run_at <= %s order by run_at",
-            (now,),
-        )).fetchall()
+    return await _get(
+        "/followups",
+        {
+            "status": "eq.scheduled",
+            "run_at": f"lte.{_iso(now)}",
+            "order": "run_at",
+            "select": "*",
+        },
+    )
 
 
 async def mark_followup_sent(followup_id: str) -> None:
-    async with pool().connection() as conn:
-        await conn.execute(
-            "update followups set status = 'sent', sent_at = now() where id = %s",
-            (followup_id,),
-        )
+    await _patch(
+        "/followups", {"id": f"eq.{followup_id}"},
+        {"status": "sent", "sent_at": _now_iso()},
+    )
 
 
 async def cancel_pending_followups(conversation_id: str) -> None:
-    async with pool().connection() as conn:
-        await conn.execute(
-            "update followups set status = 'cancelled' "
-            "where conversation_id = %s and status = 'scheduled'",
-            (conversation_id,),
-        )
+    await _patch(
+        "/followups",
+        {"conversation_id": f"eq.{conversation_id}", "status": "eq.scheduled"},
+        {"status": "cancelled"},
+    )

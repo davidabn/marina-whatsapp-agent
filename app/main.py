@@ -48,13 +48,8 @@ app.include_router(payments_webhook.router)
 @app.get("/health")
 async def health():
     ffmpeg_ok = shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
-    db_ok = True
-    try:
-        from app.db import repo
-        async with repo.pool().connection() as conn:
-            await conn.execute("select 1")
-    except Exception:  # noqa: BLE001
-        db_ok = False
+    from app.db import repo
+    db_ok = await repo.healthcheck()
     healthy = ffmpeg_ok and db_ok
     return {"status": "ok" if healthy else "degraded", "ffmpeg": ffmpeg_ok, "db": db_ok}
 

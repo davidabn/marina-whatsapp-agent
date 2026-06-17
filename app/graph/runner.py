@@ -83,9 +83,6 @@ async def setup() -> None:
     """Open the DB pool + checkpointer, compile the graph, wire singletons."""
     global _graph, _saver, _saver_cm, _evo, _mp
 
-    await repo.init_pool()
-    await repo.apply_migrations()  # idempotent business-table provisioning on boot
-
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
     _saver_cm = AsyncPostgresSaver.from_conn_string(settings.supabase_db_url)
@@ -113,7 +110,6 @@ async def teardown() -> None:
     if _evo is not None:
         await _evo.aclose()
         _evo = None
-    await repo.close_pool()
     _graph = None
 
 
