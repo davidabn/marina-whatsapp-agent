@@ -7,17 +7,27 @@ wa_jid from the generation's conversation_id (repo.get_jid_by_conversation).
 """
 from __future__ import annotations
 
-from app.graph.nodes import DELETE, conversation_id, emit_text, patch_extra
+from app.graph.nodes import (
+    DELETE,
+    conversation_id,
+    emit_text,
+    get_brief,
+    patch_extra,
+    recipient_pronoun,
+)
 from app.graph.state import Stage
 from app.music import kie
 from app.music.schema import KiePayload
 from app.db import repo
 
-_BUBBLES = [
-    "Show, vou gerar agora ✨",
-    "Demora uns minutinhos pra ficar pronta — to fazendo com calma pra ficar do "
-    "jeito que ele merece 💛",
-]
+
+def _bubbles(brief) -> list[str]:
+    rec = recipient_pronoun(brief, unknown=brief.recipient_name or "essa pessoa")
+    return [
+        "Show, vou gerar agora ✨",
+        "Demora uns minutinhos pra ficar pronta — to fazendo com calma pra ficar do "
+        f"jeito que {rec} merece 💛",
+    ]
 
 
 async def generate(state: dict) -> dict:
@@ -34,7 +44,7 @@ async def generate(state: dict) -> dict:
     is_regen = bool(extra.get("_is_regen"))
     regen_count = int(state.get("regen_count") or 0) + (1 if is_regen else 0)
 
-    msgs = emit_text(state, _BUBBLES)
+    msgs = emit_text(state, _bubbles(get_brief(state)))
     return {
         "kie_task_id": task_id,
         "stage": Stage.GENERATION_WAIT.value,

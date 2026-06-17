@@ -63,6 +63,22 @@ def get_brief(state: dict) -> Brief:
     return Brief(**(state.get("brief") or {}))
 
 
+def buyer_adj(brief: Brief, masc: str, fem: str, neutral: str) -> str:
+    """Pick a buyer-directed word by the buyer's gender; `neutral` when unknown."""
+    return {"m": masc, "f": fem}.get(brief.buyer_gender() or "", neutral)
+
+
+def recipient_pronoun(brief: Brief, *, unknown: str | None = None) -> str:
+    """'ele'/'ela' for the recipient (from the relationship); falls back to
+    `unknown` (or the recipient name / 'a pessoa') when gender is unknown."""
+    g = brief.recipient_gender()
+    if g == "m":
+        return "ele"
+    if g == "f":
+        return "ela"
+    return unknown if unknown is not None else (brief.recipient_name or "a pessoa")
+
+
 def dump_brief(brief: Brief) -> dict:
     """JSON-safe dump (enums -> strings) so it round-trips the checkpointer/DB."""
     return brief.model_dump(mode="json")

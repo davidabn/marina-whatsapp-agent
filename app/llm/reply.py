@@ -63,6 +63,40 @@ def _strip_banned_emojis(text: str) -> str:
     return re.sub(r"[ \t]{2,}", " ", text).strip()
 
 
+def gender_hint(brief: Brief | None) -> str:
+    """One-line gender/agreement guidance for the LLM, derived from the brief.
+
+    Keeps Marina from defaulting to feminine forms for a male buyer and uses the
+    right pronoun for the recipient.
+    """
+    if brief is None:
+        return ""
+    bits: list[str] = []
+    bg = brief.buyer_gender()
+    if bg == "m":
+        bits.append(
+            "O CLIENTE com quem voce fala e HOMEM: use concordancia MASCULINA ao se "
+            "dirigir a ele (ex: 'tranquilo', 'preparado'). Nunca use formas femininas pra ele."
+        )
+    elif bg == "f":
+        bits.append(
+            "A CLIENTE com quem voce fala e MULHER: use concordancia FEMININA ao se "
+            "dirigir a ela (ex: 'tranquila', 'preparada')."
+        )
+    else:
+        bits.append(
+            "Voce ainda NAO sabe o genero do cliente: use linguagem NEUTRA, nao assuma "
+            "homem nem mulher (evite 'tranquilo/tranquila'; prefira 'pode deixar comigo')."
+        )
+    rg = brief.recipient_gender()
+    name = brief.recipient_name or "o presenteado"
+    if rg == "m":
+        bits.append(f"O presenteado ({name}) e HOMEM: use ele/dele.")
+    elif rg == "f":
+        bits.append(f"A presenteada ({name}) e MULHER: use ela/dela.")
+    return "GENERO E CONCORDANCIA: " + " ".join(bits)
+
+
 async def compose(
     history: list,
     instruction: str,
@@ -77,11 +111,14 @@ async def compose(
         if known:
             brief_ctx = f"\n\nO QUE JA SABEMOS (brief): {known}"
 
+    gh = gender_hint(brief)
+    gh_block = f"\n\n{gh}" if gh else ""
+
     llm = get_chat(temperature=temperature)
 
     def _messages(extra_instruction: str = "") -> list:
         system_task = (
-            f"OBJETIVO DESTE TURNO:\n{instruction}{brief_ctx}\n\n{_BUBBLE_FORMAT}"
+            f"OBJETIVO DESTE TURNO:\n{instruction}{brief_ctx}{gh_block}\n\n{_BUBBLE_FORMAT}"
             f"{extra_instruction}"
         )
         return [

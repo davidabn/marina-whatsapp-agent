@@ -16,6 +16,7 @@ from app.graph.nodes import (
     emit_text,
     get_brief,
     patch_extra,
+    recipient_pronoun,
 )
 from app.graph.state import Stage
 from app.media import storage
@@ -27,7 +28,8 @@ logger = logging.getLogger(__name__)
 
 async def deliver(state: dict) -> dict:
     brief = get_brief(state)
-    name = brief.recipient_name or "ele"
+    name = brief.recipient_name or "essa pessoa"
+    rec = recipient_pronoun(brief, unknown=name)
     variants = state.get("variants") or []
     chosen_id = state.get("chosen_variant")
     chosen = next(
@@ -55,7 +57,7 @@ async def deliver(state: dict) -> dict:
     msgs += emit_text(
         state,
         [
-            "Manda pra ele de um jeito especial 💛 grava a reacao se conseguir, e o "
+            f"Manda pra {rec} de um jeito especial 💛 grava a reacao se conseguir, e o "
             "melhor presente que tu vai ganhar de volta 🥹"
         ],
     )

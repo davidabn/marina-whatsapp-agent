@@ -17,7 +17,7 @@ from app.llm import reply
 
 async def choice(state: dict) -> dict:
     brief = get_brief(state)
-    name = brief.recipient_name or "ele"
+    name = brief.recipient_name or "essa pessoa"
 
     # Safety belt for the PIX-after-preview invariant: never advance to pix
     # without a delivered preview.
@@ -27,7 +27,7 @@ async def choice(state: dict) -> dict:
     instruction = (
         f"A pessoa reagiu a previa da musica. Reaja junto, com carinho, confirmando "
         f"a emocao ('ficou com a cara de voces'). Depois, em outra bolha, projete a "
-        f"reacao: 'imagina a cara do {name} escutando isso'. Nao fale de preco nem de "
+        f"reacao: 'imagina a cara de {name} escutando isso'. Nao fale de preco nem de "
         f"pix — isso vem logo depois. Curto."
     )
     bubbles = await reply.compose(history(state), instruction, brief=brief)

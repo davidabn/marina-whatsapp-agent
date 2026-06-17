@@ -49,6 +49,17 @@ class Relationship(str, Enum):
     OUTRO = "outro"
 
 
+# Recipient gender implied by the relationship to the buyer.
+_MALE_RECIPIENTS = {
+    Relationship.ESPOSO, Relationship.NAMORADO, Relationship.PAI,
+    Relationship.FILHO, Relationship.AMIGO,
+}
+_FEMALE_RECIPIENTS = {
+    Relationship.ESPOSA, Relationship.NAMORADA, Relationship.MAE,
+    Relationship.FILHA, Relationship.AMIGA,
+}
+
+
 class Brief(BaseModel):
     """Everything we collect to write the song. Filled incrementally by nodes."""
     recipient_name: Optional[str] = None
@@ -69,6 +80,18 @@ class Brief(BaseModel):
 
     def has_style(self) -> bool:
         return bool(self.style_request)
+
+    def recipient_gender(self) -> Optional[str]:
+        """'m'/'f' of the gift recipient, from the relationship; None if unknown."""
+        if self.relationship in _MALE_RECIPIENTS:
+            return "m"
+        if self.relationship in _FEMALE_RECIPIENTS:
+            return "f"
+        return None
+
+    def buyer_gender(self) -> Optional[str]:
+        """'m'/'f' of the person we're chatting with (the buyer = singing voice)."""
+        return self.singer_gender
 
 
 class ConversationState(TypedDict, total=False):

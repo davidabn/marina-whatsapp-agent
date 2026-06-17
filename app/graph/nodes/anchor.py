@@ -15,7 +15,14 @@ from __future__ import annotations
 import re
 
 from app.config import settings
-from app.graph.nodes import emit_text, get_brief, history, patch_extra
+from app.graph.nodes import (
+    buyer_adj,
+    emit_text,
+    get_brief,
+    history,
+    patch_extra,
+    recipient_pronoun,
+)
 from app.graph.state import Stage
 from app.llm import reply
 
@@ -35,16 +42,19 @@ def _is_affirmative(text: str) -> bool:
     return t in {"👍", "🙌", "❤️", "💛", "s", "ss"}
 
 
-def _explanation_bubbles(name: str) -> list[str]:
+def _explanation_bubbles(brief) -> list[str]:
     price = settings.price_reais
+    name = brief.recipient_name or "essa pessoa"
+    tranq = buyer_adj(brief, "tranquilo", "tranquila", "por dentro de tudo")
+    rec = recipient_pronoun(brief, unknown=name)
     return [
-        "Deixa eu te explicar rapidinho como funciona pra tu ja ficar tranquila:",
+        f"Deixa eu te explicar rapidinho como funciona pra tu ja ficar {tranq}:",
         "1. Eu vou criar a musica com a historia de voces",
         "2. Te mando uma previa de uns 45 segundos pra tu sentir como ficou",
         f"3. Quando tu gostar, e so um pix de R$ {price} e eu te mando a musica "
         f"completa, com a letra inteira, pra mandar pro {name}",
         "Pensa que e mais barato que um buque de flores que murcha em 3 dias 🌸 e "
-        "muito mais valioso — e uma musica que so existe pra voces, que ele vai "
+        f"muito mais valioso — e uma musica que so existe pra voces, que {rec} vai "
         "poder escutar pra sempre 💛",
         "Posso comecar a gerar?",
     ]
@@ -53,10 +63,9 @@ def _explanation_bubbles(name: str) -> list[str]:
 async def anchor(state: dict) -> dict:
     extra = state.get("extra") or {}
     brief = get_brief(state)
-    name = brief.recipient_name or "ele"
 
     if not extra.get("anchor_explained"):
-        msgs = emit_text(state, _explanation_bubbles(name))
+        msgs = emit_text(state, _explanation_bubbles(brief))
         return {
             "stage": Stage.ANCHOR.value,
             "outbound": state["outbound"],
