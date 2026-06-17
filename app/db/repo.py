@@ -7,6 +7,7 @@ tables — nodes/webhooks call these helpers, never raw SQL.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Optional
 
 from psycopg.rows import dict_row
@@ -42,6 +43,22 @@ def pool() -> AsyncConnectionPool:
     if _pool is None:
         raise RuntimeError("DB pool not initialized; call init_pool() at startup.")
     return _pool
+
+
+_MIGRATIONS_DIR = Path(__file__).parent / "migrations"
+
+
+async def apply_migrations() -> None:
+    """Apply business-table SQL migrations on boot.
+
+    Idempotent: every statement is `create ... if not exists`, so running this
+    on every startup is safe. Lets the app self-provision its schema against the
+    internal Postgres without a separate manual migration step.
+    """
+    files = sorted(_MIGRATIONS_DIR.glob("*.sql"))
+    async with pool().connection() as conn:
+        for f in files:
+            await conn.execute(f.read_text())
 
 
 # --- contacts -------------------------------------------------------------

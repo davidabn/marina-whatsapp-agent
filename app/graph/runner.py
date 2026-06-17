@@ -84,6 +84,7 @@ async def setup() -> None:
     global _graph, _saver, _saver_cm, _evo, _mp
 
     await repo.init_pool()
+    await repo.apply_migrations()  # idempotent business-table provisioning on boot
 
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
