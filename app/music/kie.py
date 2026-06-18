@@ -22,6 +22,8 @@ from app.music.schema import GenerationResult, KiePayload, Variant
 
 _GENERATE_PATH = "/api/v1/generate"
 _RECORD_PATH = "/api/v1/generate/record-info"
+_MP4_GENERATE_PATH = "/api/v1/mp4/generate"
+_MP4_RECORD_PATH = "/api/v1/mp4/record-info"
 
 # Statuses recognized exactly as wait.sh does.
 SUCCESS_STATUS = "SUCCESS"
@@ -140,8 +142,75 @@ async def poll(
 
 
 async def download(url: str) -> bytes:
-    """GET the audio bytes (curl -L equivalent: follow redirects)."""
-    async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+    """GET the media bytes (curl -L equivalent: follow redirects). Audio or video."""
+    async with httpx.AsyncClient(timeout=180.0, follow_redirects=True) as client:
         resp = await client.get(url)
         resp.raise_for_status()
         return resp.content
+
+
+# --------------------------------------------------------------------------- #
+# Music video (MP4 visualizer) — POST /api/v1/mp4/generate, result via callback
+# --------------------------------------------------------------------------- #
+async def submit_mp4(task_id: str, audio_id: str, *, call_back_url: str | None = None) -> str:
+    """Submit an MP4 (visualizer) job for one audio variant of a finished song.
+
+    POST /api/v1/mp4/generate {taskId, audioId, callBackUrl} -> data.taskId (a NEW
+    id for the video task). KIE later POSTs the finished `data.video_url` to the
+    callback. Raises on a non-200 code.
+    """
+    body: dict = {"taskId": task_id, "audioId": audio_id}
+    cb = call_back_url or settings.kie_callback_url
+    if cb:
+        body["callBackUrl"] = cb
+    async with httpx.AsyncClient(base_url=settings.kie_base_url, timeout=60.0) as client:
+        resp = await client.post(_MP4_GENERATE_PATH, json=body, headers=_headers(json_body=True))
+        resp.raise_for_status()
+        pj = resp.json()
+    code = pj.get("code")
+    if code != 200:
+        msg = pj.get("msg") or pj.get("message") or "unknown error"
+        raise RuntimeError(f"KIE mp4 submit failed (code={code}): {msg}")
+    mp4_task = ((pj.get("data") or {}).get("taskId")) or ""
+    if not mp4_task:
+        raise RuntimeError(f"KIE mp4 submit returned no taskId: {pj}")
+    return str(mp4_task)
+
+
+def extract_video_url(data: dict) -> str:
+    """Best-effort pull of the MP4 URL from a callback/record-info `data` block."""
+    response = data.get("response") or {}
+    return str(
+        data.get("video_url") or data.get("videoUrl")
+        or response.get("videoUrl") or response.get("video_url")
+        or response.get("resultUrl") or ""
+    )
+
+
+async def fetch_mp4(mp4_task_id: str) -> str:
+    """One GET of the mp4 record-info; return the video URL if ready, else ''."""
+    async with httpx.AsyncClient(base_url=settings.kie_base_url, timeout=30.0) as client:
+        resp = await client.get(_MP4_RECORD_PATH, params={"taskId": mp4_task_id}, headers=_headers())
+        resp.raise_for_status()
+        body = resp.json()
+    return extract_video_url(body.get("data") or {})
+
+
+async def poll_mp4(
+    mp4_task_id: str,
+    *,
+    interval: float = settings.kie_poll_interval,
+    max_attempts: int = settings.kie_max_attempts,
+) -> str:
+    """Best-effort safety poller for the MP4 url. '' if it never becomes ready
+    (the documented path is the callback; record-info may be unavailable)."""
+    for attempt in range(max_attempts):
+        try:
+            url = await fetch_mp4(mp4_task_id)
+            if url:
+                return url
+        except Exception:  # noqa: BLE001 — tolerate; the callback is the primary path
+            pass
+        if attempt < max_attempts - 1:
+            await asyncio.sleep(interval)
+    return ""

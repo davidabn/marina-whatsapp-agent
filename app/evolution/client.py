@@ -150,10 +150,13 @@ class EvolutionClient:
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         mimetype: Optional[str] = None,
+        view_once: bool = False,
     ) -> dict:
         """Send an image/video/document by URL.
 
         ``mediatype`` ∈ {"image", "video", "document", "audio"}.
+        ``view_once`` sends it as a WhatsApp "view once" message (visualização
+        única) — only valid for image/video.
         """
         body: dict[str, Any] = {
             "number": number,
@@ -166,6 +169,8 @@ class EvolutionClient:
             body["fileName"] = file_name
         if mimetype is not None:
             body["mimetype"] = mimetype
+        if view_once:
+            body["viewOnce"] = True
         return await self._post(f"/message/sendMedia/{self.instance}", body)
 
     async def fetch_media(self, inbound: InboundMessage) -> bytes:

@@ -11,6 +11,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 
 from app.graph import runner
+from app.music import kie
 from app.utils.background import spawn
 
 log = logging.getLogger("marina.webhook.kie")
@@ -39,6 +40,19 @@ async def kie_webhook(request: Request):
         body = await request.json()
     except Exception:  # noqa: BLE001
         return {"ok": True, "skipped": "no json"}
+
+    data = body.get("data") if isinstance(body, dict) else None
+    data = data if isinstance(data, dict) else {}
+
+    # MP4 (music-video) completion carries a video url — resume the video node.
+    video_url = kie.extract_video_url(data)
+    if video_url:
+        conv = request.query_params.get("mp4_conv")
+        if not conv:
+            mp4_task = data.get("task_id") or data.get("taskId")
+            conv = runner.mp4_conv_for(str(mp4_task)) if mp4_task else None
+        spawn(runner.on_video_complete(conv, str(video_url)), name=f"kie-mp4:{conv}")
+        return {"ok": True}
 
     task_id = _extract_task_id(body)
     if not task_id:

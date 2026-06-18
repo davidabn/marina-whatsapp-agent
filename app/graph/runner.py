@@ -40,6 +40,7 @@ from app.graph.state import Stage
 from app.media import stt
 from app.music import kie
 from app.payments.mercadopago import MercadoPagoProvider
+from app.utils.background import spawn
 from app.utils.debounce import DebounceBuffer
 from app.utils.locks import contact_lock
 
@@ -54,6 +55,14 @@ _saver_cm = None
 _evo: Optional[EvolutionClient] = None
 _mp: Optional[MercadoPagoProvider] = None
 _debounce = DebounceBuffer(settings.debounce_seconds)
+
+# Backup map: KIE mp4 task id -> conversation id, so the video callback can be
+# resolved even if the conversation hint in its callback URL is lost.
+_MP4_CONV: dict[str, str] = {}
+
+
+def mp4_conv_for(mp4_task_id: str) -> Optional[str]:
+    return _MP4_CONV.get(mp4_task_id)
 
 
 def get_graph():
@@ -236,6 +245,11 @@ async def _flush(
                 pending = []
             if item.get("kind") == "audio" and item.get("url"):
                 await evo.send_audio(number, item["url"])
+            elif item.get("kind") == "video" and item.get("url"):
+                await evo.send_media(
+                    number, item["url"], mediatype="video", mimetype="video/mp4",
+                    caption=item.get("caption"), view_once=bool(item.get("view_once")),
+                )
     if pending:
         await evo.send_text_sequence(number, pending)
 
@@ -250,7 +264,7 @@ async def _flush(
             else:
                 await repo.log_message(
                     conversation_id=conversation_id, contact_id=contact_id,
-                    direction="out", kind="audio",
+                    direction="out", kind=item.get("kind") or "audio",
                     content=item.get("caption"), media_url=item.get("url"),
                 )
         except Exception:  # noqa: BLE001
@@ -380,6 +394,57 @@ async def on_generation_complete(task_id: str) -> None:
             conversation_id=conv_id,
             channels={"variants": variants, "kie_task_id": task_id},
         )
+        await _flush(_phone(jid), result, conversation_id=conv_id)
+        # The preview node kicked off the MP4 visualizer; remember the mapping and
+        # start a safety poller (the callback is primary, this is the backup).
+        mp4_task = result.get("mp4_task_id")
+        if mp4_task:
+            _MP4_CONV[str(mp4_task)] = conv_id
+            spawn(_poll_video(conv_id, str(mp4_task)), name=f"kie-mp4-poll:{mp4_task}")
+
+
+# --------------------------------------------------------------------------- #
+# Entry: music-video (MP4) finished -> send the view-once preview
+# --------------------------------------------------------------------------- #
+async def on_video_complete(conv_id: Optional[str], video_url: str) -> None:
+    """Resume the graph to send the view-once music video. Idempotent: the node
+    no-ops if a preview was already delivered, so callback + poller can race."""
+    if not conv_id or not video_url:
+        return
+    jid = await repo.get_jid_by_conversation(conv_id)
+    if not jid:
+        logger.warning("on_video_complete: no jid for conv %s", conv_id)
+        return
+    async with contact_lock(jid):
+        result = await _invoke(
+            jid, event="video_done", conversation_id=conv_id,
+            channels={"preview_video_url": video_url},
+        )
+        await _flush(_phone(jid), result, conversation_id=conv_id)
+
+
+async def _poll_video(conv_id: str, mp4_task_id: str) -> None:
+    """Best-effort safety net: poll KIE for the MP4 url, then deliver it. If it
+    never materializes, resume with `video_timeout` so the audio preview goes out
+    and the funnel doesn't dead-end."""
+    url = ""
+    try:
+        url = await kie.poll_mp4(mp4_task_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("mp4 poll failed for %s", mp4_task_id)
+    if url:
+        await on_video_complete(conv_id, url)
+    else:
+        await _video_timeout(conv_id)
+
+
+async def _video_timeout(conv_id: str) -> None:
+    """Video never arrived — resume the graph to send the audio preview instead."""
+    jid = await repo.get_jid_by_conversation(conv_id) if conv_id else None
+    if not jid:
+        return
+    async with contact_lock(jid):
+        result = await _invoke(jid, event="video_timeout", conversation_id=conv_id)
         await _flush(_phone(jid), result, conversation_id=conv_id)
 
 
