@@ -45,13 +45,13 @@ _WANTS_LYRICS = re.compile(
 # --------------------------------------------------------------------------- #
 _TOO_EXPENSIVE = [
     "Eu te entendo 💛 so queria te lembrar que e menos que um buque de flores que "
-    "dura 3 dias — essa musica ele vai poder escutar pra sempre, sempre que sentir "
-    "saudade tua. E e a historia de VOCES, ninguem mais no mundo tem",
+    "dura 3 dias — essa musica vai ficar pra sempre, pra escutar toda vez que bater "
+    "a saudade. E e a historia de VOCES, ninguem mais no mundo tem",
 ]
 _WILL_THINK = [
     "Imagina 💛 fica a vontade",
-    "So uma coisa: a musica ta aqui prontinha, esperando. Se tu quiser fazer ainda "
-    "hoje pra surpreender ele antes de dormir, e so me chamar 💛",
+    "So uma coisa: a musica ta aqui prontinha, esperando. Se tu quiser fazer essa "
+    "surpresa ainda hoje, antes de dormir, e so me chamar 💛",
 ]
 _PAY_LATER = [
     "Olha, pra eu te mandar a completa hoje precisa ser agora — assim eu nao perco a "
@@ -65,7 +65,7 @@ _REGEN_CAP = [
     "Ja refiz com todo carinho 💛 deixa eu olhar isso com mais atencao pra fazer do "
     "jeito certo pra voces",
 ]
-_HOLD_GENERATION = ["Ja ta quase ✨ to finalizando com carinho pra ele 💛"]
+_HOLD_GENERATION = ["Ja ta quase ✨ to finalizando com carinho 💛"]
 _HOLD_PIX = ["Assim que cair o pix aqui eu ja te mando ela completinha 💛"]
 
 # Stages where money/objection recovery copy makes sense.
