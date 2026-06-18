@@ -56,18 +56,14 @@ def emit_audio(state: dict, url: str, *, caption: str | None = None) -> list:
     return []
 
 
-def emit_video(
-    state: dict, url: str, *, caption: str | None = None, view_once: bool = False
-) -> list:
-    """Append a video action. `view_once` => WhatsApp visualização única. Returns []."""
+def emit_video(state: dict, url: str, *, caption: str | None = None) -> list:
+    """Append a video action (e.g. the 45s preview). Returns [] (no chat text)."""
     if not url:
         return []
     out = list(state.get("outbound") or [])
     item: dict[str, Any] = {"kind": "video", "url": url}
     if caption:
         item["caption"] = caption
-    if view_once:
-        item["view_once"] = True
     out.append(item)
     state["outbound"] = out
     return []

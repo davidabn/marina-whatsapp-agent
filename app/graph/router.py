@@ -135,10 +135,6 @@ async def router(state: dict) -> dict:
     # 1) External resume events bypass intent classification.
     if event == "generation_done":
         return _route(state, "preview")
-    if event == "video_done":
-        return _route(state, "video_ready")
-    if event == "video_timeout":
-        return _route(state, "preview", force_audio=True)
     if event == "payment_done":
         return _route(state, "deliver")
     if event == "followup":

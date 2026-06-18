@@ -102,9 +102,7 @@ class ConversationState(TypedDict, total=False):
     brief: dict                      # Brief.model_dump()
     generation_consent: bool
     kie_task_id: Optional[str]
-    mp4_task_id: Optional[str]       # KIE music-video (visualizer) task id
-    preview_video_url: Optional[str] # transient: video url handed in on video_done
-    variants: list[dict]             # [{id, audio_url, title}]
+    variants: list[dict]             # [{id, audio_url, title, image_url}]
     preview_url: Optional[str]
     full_url: Optional[str]
     lyrics_full: Optional[str]

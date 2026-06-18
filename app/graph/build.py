@@ -31,7 +31,6 @@ from app.graph.nodes.pix import pix
 from app.graph.nodes.preview import preview
 from app.graph.nodes.songwriter_node import songwriter_node
 from app.graph.nodes.style import style
-from app.graph.nodes.video_ready import video_ready
 from app.graph.nodes.welcome import welcome
 from app.graph.router import router
 from app.graph.state import ConversationState
@@ -46,7 +45,6 @@ _ALL_TARGETS = {
     "songwriter": "songwriter",
     "generate": "generate",
     "preview": "preview",
-    "video_ready": "video_ready",
     "choice": "choice",
     "pix": "pix",
     "deliver": "deliver",
@@ -72,7 +70,6 @@ def build_graph(checkpointer=None):
     g.add_node("songwriter", songwriter_node)
     g.add_node("generate", generate)
     g.add_node("preview", preview)
-    g.add_node("video_ready", video_ready)
     g.add_node("choice", choice)
     g.add_node("pix", pix)
     g.add_node("deliver", deliver)
@@ -86,7 +83,6 @@ def build_graph(checkpointer=None):
     g.add_edge("discovery_recipient", END)
     g.add_edge("generate", END)
     g.add_edge("preview", END)
-    g.add_edge("video_ready", END)
     g.add_edge("pix", END)
     g.add_edge("deliver", END)
     g.add_edge("followup", END)

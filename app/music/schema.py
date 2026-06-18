@@ -36,6 +36,7 @@ class Variant(BaseModel):
     id: str
     audio_url: str
     title: str = ""
+    image_url: str = ""  # Suno cover art, used as the still for the 45s video preview
 
 
 class GenerationResult(BaseModel):

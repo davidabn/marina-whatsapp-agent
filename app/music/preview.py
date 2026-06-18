@@ -76,3 +76,72 @@ def make_preview(
         for p in (tmp_in, out_path):
             if p and os.path.exists(p):
                 os.remove(p)
+
+
+def make_video_preview(
+    audio: bytes | str,
+    image: bytes | str,
+    *,
+    start: float = 0.0,
+    duration: float = 45.0,
+    fade_in: float = 1.0,
+    fade_out: float = 2.0,
+    bitrate: str = "192k",
+    size: int = 720,
+) -> bytes:
+    """Render a 45s MP4 = still cover image + faded, loudness-normalized audio.
+
+    `audio`/`image` may be raw bytes or file paths. Returns the MP4 bytes. Used
+    for the WhatsApp preview (a video the customer can watch, kept short so the
+    full song stays the paid deliverable). Temp files are always cleaned.
+    """
+    cleanup: list[str] = []
+
+    def _materialize(src: bytes | str, suffix: str) -> str:
+        if isinstance(src, (bytes, bytearray)):
+            fd, p = tempfile.mkstemp(suffix=suffix)
+            os.close(fd)
+            Path(p).write_bytes(bytes(src))
+            cleanup.append(p)
+            return p
+        return str(src)
+
+    audio_path = _materialize(audio, ".mp3")
+    image_path = _materialize(image, ".jpg")
+    fd, out_path = tempfile.mkstemp(suffix=".mp4")
+    os.close(fd)
+    cleanup.append(out_path)
+
+    try:
+        total = _probe_duration(audio_path)
+        if start + duration > total:
+            start = max(0.0, total - duration)
+
+        fade_out_start = max(0.0, duration - fade_out)
+        af = (
+            f"afade=t=in:st=0:d={fade_in},"
+            f"afade=t=out:st={fade_out_start}:d={fade_out},"
+            f"loudnorm=I=-14:TP=-1.5:LRA=11"
+        )
+        # Square, even dimensions, yuv420p so WhatsApp/iOS render it reliably.
+        vf = (
+            f"scale={size}:{size}:force_original_aspect_ratio=increase,"
+            f"crop={size}:{size},format=yuv420p"
+        )
+        cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+            "-loop", "1", "-i", image_path,
+            "-ss", f"{start:.3f}", "-i", audio_path,
+            "-t", f"{duration:.3f}",
+            "-af", af, "-vf", vf,
+            "-c:v", "libx264", "-tune", "stillimage", "-r", "5", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", bitrate,
+            "-shortest", "-movflags", "+faststart",
+            out_path,
+        ]
+        subprocess.run(cmd, check=True)
+        return Path(out_path).read_bytes()
+    finally:
+        for p in cleanup:
+            if p and os.path.exists(p):
+                os.remove(p)
