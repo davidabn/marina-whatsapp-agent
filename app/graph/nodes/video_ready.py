@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 
 from app.graph.nodes import conversation_id, emit_text, emit_video, patch_extra
+from app.graph.nodes.preview import _audio_preview
 from app.graph.state import Stage
 from app.media import storage
 from app.music import kie
@@ -32,9 +33,19 @@ async def video_ready(state: dict) -> dict:
         return {"outbound": state.get("outbound") or [], "extra": patch_extra(state, _next="end")}
 
     conv_id = conversation_id(state)
-    data = await kie.download(video_url)
-    path = storage.build_path(conv_id or state.get("wa_jid", "anon"), prefix="previews", ext="mp4")
-    hosted = await storage.upload(path, data, "video/mp4")
+    # Re-host the video; if the download/upload fails, degrade to the audio
+    # preview so the conversation never dead-ends at "to finalizando o video".
+    try:
+        data = await kie.download(video_url)
+        path = storage.build_path(conv_id or state.get("wa_jid", "anon"), prefix="previews", ext="mp4")
+        hosted = await storage.upload(path, data, "video/mp4")
+    except Exception:  # noqa: BLE001
+        logger.exception("video preview re-host failed; falling back to audio")
+        variants = state.get("variants") or []
+        if variants:
+            prompt = (state.get("extra") or {}).get("lyrics_prompt") or ""
+            return await _audio_preview(state, first=variants[0], prompt=prompt, send_teaser=False)
+        return {"outbound": state.get("outbound") or [], "extra": patch_extra(state, _next="end")}
 
     msgs = emit_video(
         state, hosted,
