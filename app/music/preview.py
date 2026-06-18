@@ -87,9 +87,11 @@ def make_video_preview(
     fade_in: float = 1.0,
     fade_out: float = 2.0,
     bitrate: str = "192k",
-    size: int = 720,
+    width: int = 720,
+    height: int = 1280,
 ) -> bytes:
-    """Render a 45s MP4 = still cover image + faded, loudness-normalized audio.
+    """Render a 45s vertical (9:16) MP4 = cover art over a blurred fill of itself
+    + faded, loudness-normalized audio.
 
     `audio`/`image` may be raw bytes or file paths. Returns the MP4 bytes. Used
     for the WhatsApp preview (a video the customer can watch, kept short so the
@@ -118,22 +120,26 @@ def make_video_preview(
             start = max(0.0, total - duration)
 
         fade_out_start = max(0.0, duration - fade_out)
-        af = (
-            f"afade=t=in:st=0:d={fade_in},"
+        # 9:16 vertical: a blurred, zoomed copy of the cover fills the frame, with
+        # the (square) cover centered on top. Even dims + yuv420p for WhatsApp/iOS.
+        filter_complex = (
+            f"[0:v]split=2[a][b];"
+            f"[a]scale={width}:{height}:force_original_aspect_ratio=increase,"
+            f"crop={width}:{height},boxblur=20:4,setsar=1[bg];"
+            f"[b]scale={width}:{width}:force_original_aspect_ratio=increase,"
+            f"crop={width}:{width}[fg];"
+            f"[bg][fg]overlay=(W-w)/2:(H-h)/2,format=yuv420p[v];"
+            f"[1:a]afade=t=in:st=0:d={fade_in},"
             f"afade=t=out:st={fade_out_start}:d={fade_out},"
-            f"loudnorm=I=-14:TP=-1.5:LRA=11"
-        )
-        # Square, even dimensions, yuv420p so WhatsApp/iOS render it reliably.
-        vf = (
-            f"scale={size}:{size}:force_original_aspect_ratio=increase,"
-            f"crop={size}:{size},format=yuv420p"
+            f"loudnorm=I=-14:TP=-1.5:LRA=11[a2]"
         )
         cmd = [
             "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
             "-loop", "1", "-i", image_path,
             "-ss", f"{start:.3f}", "-i", audio_path,
             "-t", f"{duration:.3f}",
-            "-af", af, "-vf", vf,
+            "-filter_complex", filter_complex,
+            "-map", "[v]", "-map", "[a2]",
             "-c:v", "libx264", "-tune", "stillimage", "-r", "5", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", bitrate,
             "-shortest", "-movflags", "+faststart",
