@@ -17,6 +17,7 @@ from app.config import settings
 from app.graph import runner
 from app.scheduler.followups import start_scheduler, stop_scheduler
 from app.webhooks import evolution as evolution_webhook
+from app.webhooks import infinitepay as infinitepay_webhook
 from app.webhooks import kie as kie_webhook
 from app.webhooks import payments as payments_webhook
 
@@ -44,6 +45,7 @@ app = FastAPI(title="Marina WhatsApp Agent", lifespan=lifespan)
 app.include_router(evolution_webhook.router)
 app.include_router(kie_webhook.router)
 app.include_router(payments_webhook.router)
+app.include_router(infinitepay_webhook.router)
 
 
 @app.get("/health")

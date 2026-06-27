@@ -39,6 +39,8 @@ from app.graph.build import build_graph
 from app.graph.state import Stage
 from app.media import stt
 from app.music import kie
+from app.payments.base import PaymentProvider
+from app.payments.infinitepay import InfinityPayProvider
 from app.payments.mercadopago import MercadoPagoProvider
 from app.utils.debounce import DebounceBuffer
 from app.utils.locks import contact_lock
@@ -53,6 +55,7 @@ _saver = None
 _saver_cm = None
 _evo: Optional[EvolutionClient] = None
 _mp: Optional[MercadoPagoProvider] = None
+_payment: Optional[PaymentProvider] = None
 _debounce = DebounceBuffer(settings.debounce_seconds)
 
 
@@ -76,12 +79,26 @@ def get_mp() -> MercadoPagoProvider:
     return _mp
 
 
+def get_payment_provider() -> PaymentProvider:
+    """The active checkout/charge provider (settings.payment_provider).
+
+    Defaults to InfinitePay; "mercadopago" selects the legacy PIX path.
+    """
+    global _payment
+    if _payment is None:
+        if settings.payment_provider == "mercadopago":
+            _payment = get_mp()
+        else:
+            _payment = InfinityPayProvider()
+    return _payment
+
+
 # --------------------------------------------------------------------------- #
 # Lifecycle
 # --------------------------------------------------------------------------- #
 async def setup() -> None:
     """Open the DB pool + checkpointer, compile the graph, wire singletons."""
-    global _graph, _saver, _saver_cm, _evo, _mp
+    global _graph, _saver, _saver_cm, _evo, _mp, _payment
 
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
@@ -95,7 +112,8 @@ async def setup() -> None:
     _graph = build_graph(_saver)
     _evo = EvolutionClient()
     _mp = MercadoPagoProvider()
-    logger.info("Marina graph runner ready")
+    _payment = None  # lazily built by get_payment_provider() per settings
+    logger.info("Marina graph runner ready (payments: %s)", settings.payment_provider)
 
 
 async def teardown() -> None:
@@ -391,7 +409,32 @@ async def on_generation_complete(task_id: str) -> None:
 # --------------------------------------------------------------------------- #
 # Entry: payment notification
 # --------------------------------------------------------------------------- #
+async def _deliver_for_order(order: dict) -> None:
+    """Shared post-payment tail: resume the graph at `deliver` and clean up.
+
+    Callers must have already flipped the order to `paid` (so this runs exactly
+    once). Resolves the jid from the order's conversation, invokes the graph with
+    `payment_done`, flushes the full-song delivery, and cancels cold follow-ups.
+    """
+    conv_id = str(order.get("conversation_id") or "")
+    jid = await repo.get_jid_by_conversation(conv_id) if conv_id else None
+    if not jid:
+        logger.warning("deliver: no jid for order %s", order.get("id"))
+        return
+
+    async with contact_lock(jid):
+        result = await _invoke(
+            jid, event="payment_done", conversation_id=conv_id, channels={"paid": True}
+        )
+        await _flush(_phone(jid), result, conversation_id=conv_id)
+        try:
+            await repo.cancel_pending_followups(conv_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("cancel_pending_followups (post-pay) failed")
+
+
 async def on_payment_event(mp_payment_id: str) -> None:
+    """Mercado Pago notification (legacy PIX path)."""
     order = await repo.get_order_by_mp_payment(mp_payment_id)
     if not order:
         logger.warning("on_payment_event: unknown payment %s", mp_payment_id)
@@ -407,21 +450,48 @@ async def on_payment_event(mp_payment_id: str) -> None:
     if not paid:
         return  # lost the race / already paid elsewhere
 
-    conv_id = str(order.get("conversation_id") or "")
-    jid = await repo.get_jid_by_conversation(conv_id) if conv_id else None
-    if not jid:
-        logger.warning("on_payment_event: no jid for payment %s", mp_payment_id)
+    await _deliver_for_order(order)
+
+
+async def on_infinitepay_payment(
+    order_nsu: str, transaction_nsu: Optional[str], slug: Optional[str]
+) -> None:
+    """InfinitePay checkout notification.
+
+    The webhook is UNSIGNED, so it is treated as an untrusted ping: we re-confirm
+    authoritatively via /payment_check and require the paid amount to cover the
+    price before delivering. A spoofed notification therefore cannot trigger
+    delivery.
+    """
+    order = await repo.get_order_by_mp_payment(order_nsu)  # mp_payment_id == order_nsu
+    if not order:
+        logger.warning("on_infinitepay_payment: unknown order_nsu %s", order_nsu)
+        return
+    if (order.get("status") or "").lower() == "paid":
+        return  # idempotent: already delivered
+
+    provider = get_payment_provider()
+    try:
+        res = await provider.payment_check(order_nsu, transaction_nsu, slug)  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001
+        logger.exception("payment_check failed for order_nsu %s", order_nsu)
         return
 
-    async with contact_lock(jid):
-        result = await _invoke(
-            jid, event="payment_done", conversation_id=conv_id, channels={"paid": True}
+    if not res.get("paid"):
+        logger.info("on_infinitepay_payment: not paid yet for %s", order_nsu)
+        return
+    if int(res.get("amount_cents") or 0) < settings.price_cents:
+        logger.warning(
+            "on_infinitepay_payment: underpaid %s (%s < %s)",
+            order_nsu, res.get("amount_cents"), settings.price_cents,
         )
-        await _flush(_phone(jid), result, conversation_id=conv_id)
-        try:
-            await repo.cancel_pending_followups(conv_id)
-        except Exception:  # noqa: BLE001
-            logger.exception("cancel_pending_followups (post-pay) failed")
+        return
+
+    paid = await repo.mark_order_paid(order_nsu, txid=transaction_nsu)
+    if not paid:
+        return  # lost the race / already paid elsewhere
+
+    await _deliver_for_order(order)
 
 
 # --------------------------------------------------------------------------- #
