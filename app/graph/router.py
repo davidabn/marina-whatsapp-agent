@@ -55,7 +55,7 @@ _WILL_THINK = [
 ]
 _PAY_LATER = [
     "Olha, pra eu te mandar a completa hoje precisa ser agora — assim eu nao perco a "
-    "musica que gerei especialmente pra voces. Consegue fazer o pix em uns minutinhos?",
+    "musica que gerei especialmente pra voces. Consegue finalizar o pagamento em uns minutinhos?",
 ]
 _HANDOFF = [
     "Claro 💛 vou pedir pra uma pessoa da equipe falar contigo direitinho, ta? "
@@ -66,7 +66,7 @@ _REGEN_CAP = [
     "jeito certo pra voces",
 ]
 _HOLD_GENERATION = ["Ja ta quase ✨ to finalizando com carinho 💛"]
-_HOLD_PIX = ["Assim que cair o pix aqui eu ja te mando ela completinha 💛"]
+_HOLD_PIX = ["Assim que cair o pagamento aqui eu ja te mando ela completinha 💛"]
 
 # Stages where money/objection recovery copy makes sense.
 _PRICE_STAGES = {

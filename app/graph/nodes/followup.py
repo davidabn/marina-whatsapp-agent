@@ -19,7 +19,7 @@ _INSTRUCTIONS = {
         "perguntar como foi a reacao de {name} ao ouvir a musica. Sem vender nada. Curto."
     ),
     "cold_1": (
-        "A pessoa ficou quieta depois que voce mandou o pix (2 a 4 horas atras). "
+        "A pessoa ficou quieta depois que voce mandou o link de pagamento (2 a 4 horas atras). "
         "Pergunte com leveza se esta tudo bem e lembre, sem pressao, que a musica de "
         "{name} esta guardada esperando — se quiser que voce mande pra {name} se "
         "emocionar ainda hoje, e so chamar. Curto."
