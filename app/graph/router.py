@@ -23,7 +23,7 @@ from __future__ import annotations
 import re
 
 from app.config import settings
-from app.graph.nodes import DELETE, emit_text, patch_extra
+from app.graph.nodes import DELETE, emit_text, get_brief, patch_extra, recipient_pronoun
 from app.graph.state import Stage
 from app.llm import extract
 from app.llm.extract import Intent
@@ -43,11 +43,25 @@ _WANTS_LYRICS = re.compile(
 # --------------------------------------------------------------------------- #
 # Scripted recovery copy (verbatim from sales/whatsapp-script.md, section 4)
 # --------------------------------------------------------------------------- #
-_TOO_EXPENSIVE = [
-    "Eu te entendo 💛 so queria te lembrar que e menos que um buque de flores que "
-    "dura 3 dias — essa musica vai ficar pra sempre, pra escutar toda vez que bater "
-    "a saudade. E e a historia de VOCES, ninguem mais no mundo tem",
-]
+def _too_expensive(brief) -> list[str]:
+    """Money-objection recovery (whatsapp-script.md §4).
+
+    The buquê/flowers value-anchor only lands for a romantic relationship; for a
+    friend/parent/child/etc. it falls flat, so we swap in a neutral "lasts
+    forever" frame keyed to the right pronoun.
+    """
+    if brief.is_romantic():
+        return [
+            "Eu te entendo 💛 so queria te lembrar que e menos que um buque de flores "
+            "que dura 3 dias — essa musica vai ficar pra sempre, pra escutar toda vez "
+            "que bater a saudade. E e a historia de VOCES, ninguem mais no mundo tem",
+        ]
+    rec = recipient_pronoun(brief, unknown=brief.recipient_name or "essa pessoa")
+    return [
+        "Eu te entendo 💛 mas pensa: e um presente que vai ficar pra sempre, que "
+        f"{rec} vai poder escutar toda vez que lembrar de ti. E e a historia de "
+        "voces, ninguem mais no mundo tem",
+    ]
 _WILL_THINK = [
     "Imagina 💛 fica a vontade",
     "So uma coisa: a musica ta aqui prontinha, esperando. Se tu quiser fazer essa "
@@ -173,7 +187,7 @@ async def router(state: dict) -> dict:
     # 2c) Money objections around the decision point -> scripted copy, stay.
     if stage in _PRICE_STAGES:
         if intent == Intent.TOO_EXPENSIVE:
-            return _emit_stay(state, _TOO_EXPENSIVE)
+            return _emit_stay(state, _too_expensive(get_brief(state)))
         if intent == Intent.WILL_THINK:
             return _emit_stay(state, _WILL_THINK)
         if intent == Intent.PAY_LATER:

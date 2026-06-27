@@ -58,6 +58,11 @@ _FEMALE_RECIPIENTS = {
     Relationship.ESPOSA, Relationship.NAMORADA, Relationship.MAE,
     Relationship.FILHA, Relationship.AMIGA,
 }
+# Relationships where romantic value-framing (e.g. the buquê de flores line) lands.
+_ROMANTIC_RECIPIENTS = {
+    Relationship.ESPOSO, Relationship.ESPOSA,
+    Relationship.NAMORADO, Relationship.NAMORADA,
+}
 
 
 class Brief(BaseModel):
@@ -92,6 +97,11 @@ class Brief(BaseModel):
     def buyer_gender(self) -> Optional[str]:
         """'m'/'f' of the person we're chatting with (the buyer = singing voice)."""
         return self.singer_gender
+
+    def is_romantic(self) -> bool:
+        """True for a partner relationship (esposo/a, namorado/a) — gates the
+        flower/buquê value-anchor, which only makes sense for romance."""
+        return self.relationship in _ROMANTIC_RECIPIENTS
 
 
 class ConversationState(TypedDict, total=False):
