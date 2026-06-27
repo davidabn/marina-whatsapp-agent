@@ -13,7 +13,7 @@ import re
 
 from app.graph.state import Brief
 from app.llm.llm import get_chat
-from app.llm.persona import BANNED_EMOJIS, PERSONA_SYSTEM, tone_violations
+from app.llm.persona import BANNED_EMOJIS, BANNED_PHRASES, PERSONA_SYSTEM, tone_violations
 
 logger = logging.getLogger(__name__)
 
@@ -56,11 +56,18 @@ def split_bubbles(text: str) -> list[str]:
     return bubbles or ([text] if text else [])
 
 
-def _strip_banned_emojis(text: str) -> str:
+def _strip_banned(text: str) -> str:
+    """Last-resort sanitizer: remove banned emojis AND banned phrases/words
+    (e.g. 'caraca', commercial jargon) so they never ship even if the retry
+    failed to drop them."""
     for emoji in BANNED_EMOJIS:
         text = text.replace(emoji, "")
-    # collapse any double spaces left behind
-    return re.sub(r"[ \t]{2,}", " ", text).strip()
+    for phrase in BANNED_PHRASES:
+        text = re.sub(re.escape(phrase), "", text, flags=re.IGNORECASE)
+    # tidy leftovers: collapse spaces and remove a space left before punctuation
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"\s+([,.!?…])", r"\1", text)
+    return text.strip(" ,").strip()
 
 
 def gender_hint(brief: Brief | None) -> str:
@@ -136,18 +143,19 @@ async def compose(
 
     if any(tone_violations(b) for b in bubbles):
         correction = (
-            "\n\nCORRECAO IMPORTANTE: a resposta anterior usou emoji ou jargao "
-            "proibido. Reescreva sem nenhum emoji da lista proibida (🚀 ✅ 💰 🔥 ⚡) "
-            "e sem jargao comercial ('nosso servico', 'posso prosseguir', 'fechamos', "
-            "'promocao', etc.). Use so o tom caloroso e intimo da Marina."
+            "\n\nCORRECAO IMPORTANTE: a resposta anterior usou um emoji, jargao ou "
+            "expressao proibida. Reescreva sem nenhum emoji da lista proibida "
+            "(🚀 ✅ 💰 🔥 ⚡), sem jargao comercial ('nosso servico', 'posso prosseguir', "
+            "'fechamos', 'promocao', etc.) e sem girias/interjeicoes de susto ou "
+            "palavroes (ex.: 'caraca'). Use so o tom caloroso e intimo da Marina."
         )
         try:
             bubbles = await _run(correction)
         except Exception:  # pragma: no cover - network guard
             logger.exception("compose retry failed; sanitizing first attempt")
 
-        # Last resort: strip the offending banned emoji from any bubble.
+        # Last resort: strip any offending banned emoji/phrase from each bubble.
         if any(tone_violations(b) for b in bubbles):
-            bubbles = [_strip_banned_emojis(b) for b in bubbles]
+            bubbles = [_strip_banned(b) for b in bubbles]
 
     return [b for b in bubbles if b]
