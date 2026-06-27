@@ -8,7 +8,7 @@ Covered spine:
 1. welcome -> discovery routing.
 2. price (R$ 29,90) is NEVER emitted before the anchor stage.
 3. anchor consent chains kie.submit and lands in GENERATION_WAIT.
-4. pix is only reachable after a preview_url exists (and emits the copia-cola).
+4. pix is only reachable after a preview_url exists (and emits the checkout link).
 5. an OBJECTION_STYLE intent routes back to style/regen and respects
    settings.max_free_regenerations.
 
@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 
 import app.db.repo as repo
-import app.graph.nodes.pix as pix_node
 import app.graph.runner as runner
 import app.llm.extract as extract
 import app.llm.reply as reply
@@ -90,18 +89,28 @@ def _install_fakes(monkeypatch, rec: _Recorder, *, intent=Intent.NORMAL):
     async def fake_update_generation(*a, **k):
         return None
 
-    async def fake_create_order(conversation_id, amount_cents, mp_payment_id, pix_copia_cola, txid=None):
+    async def fake_create_order(conversation_id, amount_cents, mp_payment_id,
+                                pix_copia_cola, txid=None, provider=None):
         rec.create_order_calls += 1
         return {"id": "order-1"}
+
+    async def fake_get_pending_order_by_conversation(conv_id):
+        return None  # no existing checkout — always mint a fresh one
+
+    async def fake_get_contact(wa_jid):
+        return {"push_name": "Rafael", "phone": wa_jid.split("@", 1)[0]}
 
     async def fake_schedule_followup(*a, **k):
         return None
 
-    class _FakeMP:
-        async def create_pix_charge(self, amount_cents, description, external_ref, payer_email=None):
+    class _FakeProvider:
+        async def create_pix_charge(self, amount_cents, description, external_ref,
+                                    payer_email=None, *, customer=None):
+            url = f"https://checkout.infinitepay.com.br/marina?lenc=FAKE-{external_ref[:6]}"
             return PixCharge(
-                payment_id="mp-1", copia_cola="000201PIXCOPIACOLA5204",
+                payment_id=str(external_ref), copia_cola=url,
                 qr_base64=None, status="pending", amount_cents=amount_cents,
+                checkout_url=url,
             )
 
     monkeypatch.setattr(reply, "compose", fake_compose)
@@ -112,8 +121,10 @@ def _install_fakes(monkeypatch, rec: _Recorder, *, intent=Intent.NORMAL):
     monkeypatch.setattr(repo, "create_generation", fake_create_generation)
     monkeypatch.setattr(repo, "update_generation", fake_update_generation)
     monkeypatch.setattr(repo, "create_order", fake_create_order)
+    monkeypatch.setattr(repo, "get_pending_order_by_conversation", fake_get_pending_order_by_conversation)
+    monkeypatch.setattr(repo, "get_contact", fake_get_contact)
     monkeypatch.setattr(repo, "schedule_followup", fake_schedule_followup)
-    monkeypatch.setattr(pix_node, "MercadoPagoProvider", _FakeMP)
+    monkeypatch.setattr(runner, "get_payment_provider", lambda: _FakeProvider())
 
 
 def _new_graph():
@@ -235,7 +246,7 @@ def test_pix_only_after_preview(monkeypatch):
     res_a = asyncio.run(no_preview())
     assert res_a.get("stage") != "pix_wait"
     assert rec.create_order_calls == 0
-    assert "PIXCOPIACOLA" not in _texts(res_a)
+    assert "checkout.infinitepay.com.br" not in _texts(res_a)
 
     # 4b) With a preview_url, the same reaction flows choice -> pix -> PIX_WAIT.
     jid_b = _thread()
@@ -253,7 +264,7 @@ def test_pix_only_after_preview(monkeypatch):
     res_b = asyncio.run(with_preview())
     assert res_b.get("stage") == "pix_wait"
     assert rec.create_order_calls == 1
-    assert "PIXCOPIACOLA" in _texts(res_b)
+    assert "checkout.infinitepay.com.br" in _texts(res_b)
 
 
 # --------------------------------------------------------------------------- #
