@@ -148,6 +148,12 @@ async def get_or_create_contact(
     return created[0]
 
 
+async def get_contact(wa_jid: str) -> Optional[dict[str, Any]]:
+    """Read-only contact lookup (push_name/phone for checkout personalization)."""
+    rows = await _get("/contacts", {"wa_jid": f"eq.{wa_jid}", "limit": "1"})
+    return rows[0] if rows else None
+
+
 async def set_needs_human(contact_id: str, value: bool = True) -> None:
     await _patch("/contacts", {"id": f"eq.{contact_id}"}, {"needs_human": value})
 
@@ -349,9 +355,13 @@ async def update_generation(
 
 
 # --- orders ---------------------------------------------------------------
+# `mp_payment_id` is the generic provider match key: Mercado Pago stores the MP
+# payment id; InfinitePay stores the `order_nsu` we generate. `pix_copia_cola`
+# holds the copia-e-cola (MP) or the checkout URL (InfinitePay). No schema change.
 async def create_order(conversation_id: str, amount_cents: int,
                        mp_payment_id: str, pix_copia_cola: str,
-                       txid: Optional[str] = None) -> dict:
+                       txid: Optional[str] = None,
+                       provider: Optional[str] = None) -> dict:
     # `on conflict (mp_payment_id) do update set pix_copia_cola = excluded...`:
     # only pix_copia_cola changes on conflict — GET-then-PATCH.
     existing = await _get(
@@ -369,6 +379,7 @@ async def create_order(conversation_id: str, amount_cents: int,
         {
             "conversation_id": conversation_id,
             "amount_cents": amount_cents,
+            "provider": provider or settings.payment_provider,
             "mp_payment_id": mp_payment_id,
             "pix_copia_cola": pix_copia_cola,
             "txid": txid,
@@ -385,15 +396,35 @@ async def get_order_by_mp_payment(mp_payment_id: str) -> Optional[dict]:
     return rows[0] if rows else None
 
 
-async def mark_order_paid(mp_payment_id: str) -> Optional[dict]:
+async def get_pending_order_by_conversation(conversation_id: str) -> Optional[dict]:
+    """Most recent still-unpaid order for a conversation, so re-entering the
+    offer reuses the existing checkout link instead of minting a second one."""
+    rows = await _get(
+        "/orders",
+        {
+            "conversation_id": f"eq.{conversation_id}",
+            "status": "eq.pending",
+            "order": "created_at.desc",
+            "limit": "1",
+        },
+    )
+    return rows[0] if rows else None
+
+
+async def mark_order_paid(mp_payment_id: str,
+                          txid: Optional[str] = None) -> Optional[dict]:
     """Idempotent flip pending->paid. Returns the row ONLY if THIS call flipped
     it; None if it was already paid (conditional update matched no row). The
-    caller delivers exactly once on this — a duplicate Mercado Pago webhook gets
-    None and stops, preventing double delivery."""
+    caller delivers exactly once on this — a duplicate webhook gets None and
+    stops, preventing double delivery. `txid` (e.g. InfinitePay transaction_nsu)
+    is recorded when provided."""
+    changes: dict[str, Any] = {"status": "paid", "paid_at": _now_iso()}
+    if txid:
+        changes["txid"] = txid
     updated = await _patch(
         "/orders",
         {"mp_payment_id": f"eq.{mp_payment_id}", "status": "neq.paid"},
-        {"status": "paid", "paid_at": _now_iso()},
+        changes,
         prefer="return=representation",
     )
     return updated[0] if updated else None
