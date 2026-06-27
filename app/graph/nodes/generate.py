@@ -19,6 +19,7 @@ from app.graph.state import Stage
 from app.music import kie
 from app.music.schema import KiePayload
 from app.db import repo
+from app.utils.background import spawn
 
 
 def _bubbles(brief) -> list[str]:
@@ -40,6 +41,13 @@ async def generate(state: dict) -> dict:
         # Persist the clean KIE payload; the webhook resolves wa_jid from the
         # generation's conversation_id via repo.get_jid_by_conversation.
         await repo.create_generation(conv_id, task_id, payload.to_kie_json())
+
+    # Safety net: KIE's "complete" callback can be missed. Poll record-info in the
+    # background and drive the preview ourselves if the webhook never lands. The
+    # poller is idempotent against the webhook (both dedupe on preview_url).
+    # Lazy import of runner avoids a circular import (runner -> build -> nodes).
+    from app.graph import runner
+    spawn(runner.poll_generation(task_id), name=f"kiepoll:{task_id}")
 
     is_regen = bool(extra.get("_is_regen"))
     regen_count = int(state.get("regen_count") or 0) + (1 if is_regen else 0)

@@ -22,6 +22,7 @@ thread_id == wa_jid.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -36,9 +37,11 @@ from app.db import repo
 from app.evolution.client import EvolutionClient
 from app.evolution.types import InboundMessage
 from app.graph.build import build_graph
-from app.graph.state import Stage
-from app.media import stt
-from app.music import kie
+from app.graph.nodes import recipient_pronoun
+from app.graph.state import Brief, Stage
+from app.media import storage, stt
+from app.music import kie, lyrics
+from app.music import preview as preview_mod
 from app.payments.base import PaymentProvider
 from app.payments.infinitepay import InfinityPayProvider
 from app.payments.mercadopago import MercadoPagoProvider
@@ -376,6 +379,10 @@ async def on_generation_complete(task_id: str) -> None:
     if not gen:
         logger.warning("on_generation_complete: unknown task %s", task_id)
         return
+    # Dedupe: the KIE webhook and the safety-net poller can both fire. Once the
+    # preview has been delivered (preview_url set), there is nothing to do.
+    if gen.get("preview_url"):
+        return
     conv_id = str(gen.get("conversation_id") or "")
     jid = await repo.get_jid_by_conversation(conv_id) if conv_id else None
     if not jid:
@@ -397,6 +404,12 @@ async def on_generation_complete(task_id: str) -> None:
         logger.exception("update_generation (success) failed")
 
     async with contact_lock(jid):
+        # Re-check under the lock: the webhook and poller race to get here, and
+        # the preview node stamps preview_url inside the lock. Whoever lands
+        # second sees it and bails, so the preview is sent exactly once.
+        latest = await repo.get_generation_by_task(task_id)
+        if latest and latest.get("preview_url"):
+            return
         result = await _invoke(
             jid,
             event="generation_done",
@@ -404,6 +417,134 @@ async def on_generation_complete(task_id: str) -> None:
             channels={"variants": variants, "kie_task_id": task_id},
         )
         await _flush(_phone(jid), result, conversation_id=conv_id)
+
+
+async def poll_generation(task_id: str) -> None:
+    """Safety-net poller (spawned by the generate node).
+
+    KIE's terminal "complete" callback is occasionally dropped, which would leave
+    the conversation parked at GENERATION_WAIT forever. We poll record-info and,
+    on SUCCESS, drive the preview ourselves via on_generation_complete (which is
+    idempotent against the webhook). No-op if the webhook already delivered.
+    """
+    try:
+        gen = await repo.get_generation_by_task(task_id)
+        if gen and gen.get("preview_url"):
+            return  # webhook already delivered
+        res = await kie.poll(task_id)
+        if not res.succeeded:
+            logger.info("poll_generation: %s ended %s (webhook may still arrive)",
+                        task_id, res.status)
+            return
+        await on_generation_complete(task_id)
+    except Exception:  # noqa: BLE001 — background safety net must never crash
+        logger.exception("poll_generation failed for %s", task_id)
+
+
+# --------------------------------------------------------------------------- #
+# Background: render + send the paid full song (spawned by the deliver node)
+# --------------------------------------------------------------------------- #
+async def render_and_send_full_video(
+    jid: str,
+    conv_id: Optional[str],
+    chosen: dict,
+    kie_task_id: Optional[str],
+    brief_dict: Optional[dict] = None,
+    lyrics_prompt: str = "",
+) -> None:
+    """Render the paid full song as a video and send it, then the closing bubbles.
+
+    Primary deliverable: Suno's official MP4 visualizer (KIE renders it ~2 min,
+    off our server). Fallbacks, in order: a local 9:16 ffmpeg video (cover + full
+    audio), then a full-audio note. The render runs OUTSIDE the contact lock so a
+    2-minute KIE render never blocks the user; only the send + bookkeeping take
+    the lock. Followed by the celebration / lyrics-offer / UGC-seed bubbles.
+    """
+    audio_url = chosen.get("audio_url") or chosen.get("audioUrl") or ""
+    image_url = chosen.get("image_url") or chosen.get("imageUrl") or ""
+    audio_id = chosen.get("id") or ""
+    anon = conv_id or jid or "anon"
+
+    full_url: Optional[str] = None
+    full_audio_url: Optional[str] = None
+
+    # 1) Preferred: the official Suno visualizer (animated 9:16, off our server).
+    if kie_task_id and audio_id:
+        try:
+            mp4_task = await kie.submit_mp4(kie_task_id, audio_id)
+            video_url = await kie.poll_mp4(mp4_task)
+            if video_url:
+                data = await kie.download(video_url)  # temp host -> re-host on Supabase
+                path = storage.build_path(anon, prefix="full", ext="mp4")
+                full_url = await storage.upload(path, data, "video/mp4")
+        except Exception:  # noqa: BLE001
+            logger.exception("suno visualizer failed; falling back to local render")
+            full_url = None
+
+    # 2) Fallback: local ffmpeg 9:16 video, then a full-audio note.
+    if not full_url and audio_url:
+        try:
+            audio_data = await kie.download(audio_url)
+            if image_url:
+                try:
+                    image_data = await kie.download(image_url)
+                    clip = await asyncio.to_thread(
+                        preview_mod.make_full_video, audio_data, image_data
+                    )
+                    path = storage.build_path(anon, prefix="full", ext="mp4")
+                    full_url = await storage.upload(path, clip, "video/mp4")
+                except Exception:  # noqa: BLE001
+                    logger.exception("local full video build failed; using audio")
+                    full_url = None
+            if not full_url:
+                path = storage.build_path(anon, prefix="full", ext="mp3")
+                full_audio_url = await storage.upload(path, audio_data, "audio/mpeg")
+        except Exception:  # noqa: BLE001
+            logger.exception("full-audio fallback failed")
+
+    brief = Brief(**(brief_dict or {}))
+    name = brief.recipient_name or "essa pessoa"
+    rec = recipient_pronoun(brief, unknown=name)
+
+    outbound: list[dict] = []
+    if full_url:
+        outbound.append({"kind": "video", "url": full_url, "caption": "A musica completa 🎶"})
+    elif full_audio_url:
+        outbound.append({"kind": "audio", "url": full_audio_url, "caption": "A musica completa 🎶"})
+    else:
+        outbound.append({
+            "kind": "text",
+            "text": "Deu uma engasgada aqui pra montar o video 😅 ja te resolvo e te mando, ta? 💛",
+        })
+
+    if full_url or full_audio_url:
+        outbound.append({
+            "kind": "text",
+            "text": f"Aqui ela, completinha, pra ti e pro {name} pra sempre 🎶",
+        })
+        if lyrics_prompt and lyrics.full_lyrics(lyrics_prompt):
+            outbound.append({
+                "kind": "text",
+                "text": "Se quiser a letra escrita pra acompanhar, e so me pedir 💛",
+            })
+        outbound.append({
+            "kind": "text",
+            "text": (
+                f"Manda pra {rec} de um jeito especial 💛 grava a reacao se conseguir, "
+                "e o melhor presente que tu vai ganhar de volta 🥹"
+            ),
+        })
+
+    delivered_url = full_url or full_audio_url
+    async with contact_lock(jid):
+        await _flush(_phone(jid), {"outbound": outbound}, conversation_id=conv_id)
+        if kie_task_id and delivered_url:
+            try:
+                await repo.update_generation(
+                    kie_task_id, full_url=delivered_url, completed=True
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("update_generation (full delivery) failed")
 
 
 # --------------------------------------------------------------------------- #

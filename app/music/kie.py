@@ -14,6 +14,7 @@ Used by both the KIE webhook handler (fetch_result) and the safety-net poller
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 import httpx
 
@@ -22,6 +23,8 @@ from app.music.schema import GenerationResult, KiePayload, Variant
 
 _GENERATE_PATH = "/api/v1/generate"
 _RECORD_PATH = "/api/v1/generate/record-info"
+_MP4_GENERATE_PATH = "/api/v1/mp4/generate"
+_MP4_RECORD_PATH = "/api/v1/mp4/record-info"
 
 # Statuses recognized exactly as wait.sh does.
 SUCCESS_STATUS = "SUCCESS"
@@ -148,3 +151,75 @@ async def download(url: str) -> bytes:
         resp = await client.get(url)
         resp.raise_for_status()
         return resp.content
+
+
+# --------------------------------------------------------------------------- #
+# Official Suno MP4 visualizer (paid full-song deliverable)
+# --------------------------------------------------------------------------- #
+async def submit_mp4(task_id: str, audio_id: str) -> str:
+    """Request Suno's official MP4 visualizer for one finished audio variant.
+
+    POST /api/v1/mp4/generate {taskId, audioId, callBackUrl} -> data.taskId (the
+    mp4 render task). `callBackUrl` is REQUIRED by the API (422 otherwise) even
+    though we self-poll, so we pass our configured callback. The resulting mp4
+    callback that lands on /webhooks/kie is a harmless no-op (its taskId matches
+    no `generations` row). Raises on a non-200 code.
+    """
+    body: dict[str, Any] = {"taskId": task_id, "audioId": audio_id}
+    cb = settings.kie_callback_url or settings.public_base_url
+    if cb:
+        body["callBackUrl"] = cb
+
+    async with httpx.AsyncClient(base_url=settings.kie_base_url, timeout=60.0) as client:
+        resp = await client.post(
+            _MP4_GENERATE_PATH, json=body, headers=_headers(json_body=True)
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    code = data.get("code")
+    if code != 200:
+        msg = data.get("msg") or data.get("message") or "unknown error"
+        raise RuntimeError(f"KIE mp4 submit failed (code={code}): {msg}")
+    mp4_task = ((data.get("data") or {}).get("taskId")) or ""
+    if not mp4_task:
+        raise RuntimeError(f"KIE mp4 submit returned no taskId: {data}")
+    return str(mp4_task)
+
+
+async def poll_mp4(
+    mp4_task_id: str,
+    *,
+    interval: float = settings.kie_poll_interval,
+    max_attempts: int = settings.kie_max_attempts,
+) -> str:
+    """Poll mp4 record-info until the visualizer is ready; return its videoUrl.
+
+    GET /api/v1/mp4/record-info?taskId= -> data.successFlag + data.response.videoUrl
+    (videoUrl on a temp host — the caller must download + re-host it). Returns ""
+    on terminal failure or timeout so the caller can fall back to a local render.
+    """
+    for attempt in range(max_attempts):
+        async with httpx.AsyncClient(base_url=settings.kie_base_url, timeout=30.0) as client:
+            resp = await client.get(
+                _MP4_RECORD_PATH, params={"taskId": mp4_task_id}, headers=_headers()
+            )
+            resp.raise_for_status()
+            body = resp.json()
+
+        data = body.get("data") or {}
+        response = data.get("response") or {}
+        video_url = response.get("videoUrl") or data.get("videoUrl")
+        if video_url:
+            return str(video_url)
+
+        flag = data.get("successFlag")
+        flag_s = flag.upper() if isinstance(flag, str) else ""
+        # Terminal non-success (no videoUrl): give up so the caller falls back.
+        if data.get("errorCode") or _is_failure(flag_s) or (
+            flag_s and flag_s not in ("PENDING", "GENERATING", "PROCESSING")
+        ):
+            return ""
+        if attempt < max_attempts - 1:
+            await asyncio.sleep(interval)
+    return ""
