@@ -28,6 +28,7 @@ import httpx
 
 from app.config import settings
 from app.payments.base import PaymentProvider, PixCharge
+from app.utils.shorten import shorten
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,11 @@ class InfinityPayProvider(PaymentProvider):
 
         data = await self._post("/links", body)
         url = self._extract_url(data)
+        # Shorten the long `lenc` checkout URL for a cleaner WhatsApp message.
+        # Matching is by order_nsu (not the URL), so the short link is purely
+        # cosmetic and safe to swap in. Best-effort: falls back to the long URL.
+        if url and settings.shorten_checkout_links:
+            url = await shorten(url)
         return PixCharge(
             payment_id=str(external_ref),
             copia_cola=url,            # nothing to "paste" — mirror the link

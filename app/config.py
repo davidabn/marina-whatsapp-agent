@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     infinitepay_handle: str = ""
     infinitepay_api_base: str = "https://api.checkout.infinitepay.io"
     infinitepay_redirect_url: str = ""   # where the payer lands after paying (empty => none sent)
+    # The InfinitePay checkout URL carries a long `lenc` token. Shorten it via a
+    # free service (is.gd) before sending; falls back to the long URL on failure.
+    shorten_checkout_links: bool = True
 
     # Supabase
     supabase_url: str = ""

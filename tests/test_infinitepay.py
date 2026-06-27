@@ -40,7 +40,9 @@ class _FakeClient:
 # --------------------------------------------------------------------------- #
 # Provider: create checkout link
 # --------------------------------------------------------------------------- #
-def test_create_checkout_builds_link_and_body():
+def test_create_checkout_builds_link_and_body(monkeypatch):
+    # Keep this test hermetic + focused on link/body building: no shortener.
+    monkeypatch.setattr("app.config.settings.shorten_checkout_links", False)
     client = _FakeClient({"url": "https://checkout.infinitepay.com.br/marina?lenc=abc"})
     prov = InfinityPayProvider(
         handle="marina", webhook_url="https://host/webhooks/infinitepay", client=client
@@ -67,6 +69,80 @@ def test_create_checkout_builds_link_and_body():
     assert body["webhook_url"].endswith("/webhooks/infinitepay")
     # only known customer keys are forwarded
     assert body["customer"] == {"name": "Rafael", "phone_number": "5547999"}
+
+
+def test_create_checkout_shortens_link(monkeypatch):
+    # With shortening on, the checkout URL sent to the customer is the short one,
+    # but the matching key (order_nsu) and webhook are untouched.
+    monkeypatch.setattr("app.config.settings.shorten_checkout_links", True)
+
+    async def fake_shorten(url, **kw):
+        assert url == "https://checkout.infinitepay.com.br/marina?lenc=longtoken"
+        return "https://is.gd/abc12"
+
+    monkeypatch.setattr("app.payments.infinitepay.shorten", fake_shorten)
+    client = _FakeClient({"url": "https://checkout.infinitepay.com.br/marina?lenc=longtoken"})
+    prov = InfinityPayProvider(handle="marina", client=client)
+    charge = asyncio.run(prov.create_pix_charge(2990, "d", "ord999"))
+
+    assert charge.checkout_url == "https://is.gd/abc12"
+    assert charge.copia_cola == "https://is.gd/abc12"
+    assert charge.payment_id == "ord999"            # order_nsu still round-trips
+    _, body = client.calls[0]
+    assert body["order_nsu"] == "ord999"            # matching key unaffected
+
+
+def test_create_checkout_skips_shorten_when_disabled(monkeypatch):
+    monkeypatch.setattr("app.config.settings.shorten_checkout_links", False)
+    called = {"n": 0}
+
+    async def fake_shorten(url, **kw):
+        called["n"] += 1
+        return "https://is.gd/nope"
+
+    monkeypatch.setattr("app.payments.infinitepay.shorten", fake_shorten)
+    client = _FakeClient({"url": "https://checkout.infinitepay.com.br/marina?lenc=x"})
+    prov = InfinityPayProvider(handle="marina", client=client)
+    charge = asyncio.run(prov.create_pix_charge(2990, "d", "ord1"))
+
+    assert charge.checkout_url == "https://checkout.infinitepay.com.br/marina?lenc=x"
+    assert called["n"] == 0
+
+
+# --------------------------------------------------------------------------- #
+# Shortener util: success + graceful fallback (no real network)
+# --------------------------------------------------------------------------- #
+def test_shorten_returns_short_on_success(monkeypatch):
+    import app.utils.shorten as shorten_mod
+
+    class _Resp:
+        text = "https://is.gd/short1\n"
+        def raise_for_status(self): return None
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, params=None): return _Resp()
+
+    monkeypatch.setattr(shorten_mod.httpx, "AsyncClient", _Client)
+    out = asyncio.run(shorten_mod.shorten("https://checkout.infinitepay.com.br/x?lenc=y"))
+    assert out == "https://is.gd/short1"
+
+
+def test_shorten_falls_back_on_error(monkeypatch):
+    import app.utils.shorten as shorten_mod
+
+    class _Client:
+        def __init__(self, *a, **k): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, url, params=None): raise RuntimeError("boom")
+
+    monkeypatch.setattr(shorten_mod.httpx, "AsyncClient", _Client)
+    original = "https://checkout.infinitepay.com.br/x?lenc=y"
+    out = asyncio.run(shorten_mod.shorten(original))
+    assert out == original   # fallback to the long URL, never blocks checkout
 
 
 def test_create_checkout_requires_handle():
