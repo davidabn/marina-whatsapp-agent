@@ -63,17 +63,23 @@ class _Recorder:
     def __init__(self):
         self.submit_calls = 0
         self.create_order_calls = 0
+        self.compose_calls = 0
+        self.compose_instructions: list[str] = []
+        self.extract_calls = 0
 
 
 def _install_fakes(monkeypatch, rec: _Recorder, *, intent=Intent.NORMAL):
     async def fake_compose(history, instruction, *, brief=None, temperature=0.7):
         # Never contains price; the anchor node emits price deterministically.
+        rec.compose_calls += 1
+        rec.compose_instructions.append(instruction)
         return ["resposta da marina 💛"]
 
     async def fake_classify(text, stage):
         return intent
 
     async def fake_extract(history, text, brief, stage):
+        rec.extract_calls += 1
         return _smart_extract(history, text, brief, stage)
 
     async def fake_write_song(brief, style_resolved, *, call_back_url=None):
@@ -309,3 +315,168 @@ def test_objection_style_regen_and_cap(monkeypatch):
     assert res_b.get("stage") != "style"
     assert res_b.get("needs_human") is True
     assert rec.submit_calls == 0
+
+
+# --------------------------------------------------------------------------- #
+# 6. QUESTION (doubt) -> answered from grounded facts, stays put
+# --------------------------------------------------------------------------- #
+def test_question_answered_and_stays(monkeypatch):
+    rec = _Recorder()
+    _install_fakes(monkeypatch, rec, intent=Intent.QUESTION)
+    graph = _new_graph()
+    jid = _thread()
+
+    async def drive():
+        await _seed(graph, jid, {
+            "stage": "discovery_story",
+            "brief": {"recipient_name": "Joao", "relationship": "esposo", "singer_gender": "f"},
+            "extra": {},
+        })
+        return await runner._invoke(jid, inbound_text="como recebo a musica?", conversation_id="c1")
+
+    res = asyncio.run(drive())
+
+    assert res.get("stage") == "discovery_story"                 # never advanced
+    assert (res.get("brief") or {}).get("recipient_name") == "Joao"  # brief intact
+    assert res.get("outbound")                                   # an answer was sent
+    assert rec.compose_calls >= 1
+    # the grounded FAQ facts were injected into the compose instruction
+    assert any(("checkout" in i or "29,90" in i) for i in rec.compose_instructions)
+    assert rec.extract_calls == 0   # router answered; the discovery node never ran
+
+
+def test_question_does_not_advance_or_create_order(monkeypatch):
+    rec = _Recorder()
+    _install_fakes(monkeypatch, rec, intent=Intent.QUESTION)
+    graph = _new_graph()
+    jid = _thread()
+
+    async def drive():
+        await _seed(graph, jid, {
+            "stage": "choice",
+            "brief": {"recipient_name": "Joao", "relationship": "esposo"},
+            "variants": [{"id": "v1", "audio_url": "http://a", "title": "t"}],
+            "preview_url": "http://preview/clip.mp3",
+            "extra": {},
+        })
+        return await runner._invoke(jid, inbound_text="quanto custa mesmo?", conversation_id="c1")
+
+    res = asyncio.run(drive())
+
+    assert res.get("stage") == "choice"
+    assert rec.create_order_calls == 0
+    assert "checkout.infinitepay" not in _texts(res)
+
+
+def test_question_during_pix_wait_keeps_stage(monkeypatch):
+    rec = _Recorder()
+    _install_fakes(monkeypatch, rec, intent=Intent.QUESTION)
+    graph = _new_graph()
+    jid = _thread()
+
+    async def drive():
+        await _seed(graph, jid, {
+            "stage": "pix_wait",
+            "brief": {"recipient_name": "Joao", "relationship": "esposo"},
+            "extra": {},
+        })
+        return await runner._invoke(jid, inbound_text="aceita cartao?", conversation_id="c1")
+
+    res = asyncio.run(drive())
+
+    assert res.get("stage") == "pix_wait"   # resume on payment still works
+    assert rec.submit_calls == 0
+    assert rec.create_order_calls == 0
+
+
+# --------------------------------------------------------------------------- #
+# 7. objections still fire (QUESTION ordering did not shadow them)
+# --------------------------------------------------------------------------- #
+def test_too_expensive_still_scripted_at_anchor(monkeypatch):
+    rec = _Recorder()
+    _install_fakes(monkeypatch, rec, intent=Intent.TOO_EXPENSIVE)
+    graph = _new_graph()
+    jid = _thread()
+
+    async def drive():
+        await _seed(graph, jid, {
+            "stage": "anchor",
+            "brief": {"recipient_name": "Joao", "relationship": "esposo", "singer_gender": "f"},
+            "extra": {"anchor_explained": True},
+        })
+        return await runner._invoke(jid, inbound_text="ta caro", conversation_id="c1")
+
+    res = asyncio.run(drive())
+
+    assert res.get("stage") == "anchor"
+    assert "buque" in _texts(res).lower()   # romantic value-anchor recovery copy
+    assert rec.compose_calls == 0           # scripted copy, not an LLM answer
+
+
+# --------------------------------------------------------------------------- #
+# 8. IS_BOT -> in-character deflection (stay); WANTS_HUMAN -> handoff
+# --------------------------------------------------------------------------- #
+def test_is_bot_deflects_in_character_and_stays(monkeypatch):
+    rec = _Recorder()
+    _install_fakes(monkeypatch, rec, intent=Intent.IS_BOT)
+    graph = _new_graph()
+    jid = _thread()
+
+    async def drive():
+        await _seed(graph, jid, {
+            "stage": "discovery_story",
+            "brief": {"recipient_name": "Joao", "relationship": "esposo", "singer_gender": "f"},
+            "extra": {},
+        })
+        return await runner._invoke(jid, inbound_text="vc e um robo?", conversation_id="c1")
+
+    res = asyncio.run(drive())
+
+    assert res.get("stage") == "discovery_story"
+    assert not res.get("needs_human")       # no handoff
+    assert rec.compose_calls >= 1
+    assert any("SEM confirmar" in i for i in rec.compose_instructions)  # deflect block
+
+
+def test_wants_human_still_handoff(monkeypatch):
+    rec = _Recorder()
+    _install_fakes(monkeypatch, rec, intent=Intent.WANTS_HUMAN)
+    graph = _new_graph()
+    jid = _thread()
+
+    async def drive():
+        await _seed(graph, jid, {
+            "stage": "discovery_story",
+            "brief": {"recipient_name": "Joao", "relationship": "esposo"},
+            "extra": {},
+        })
+        return await runner._invoke(
+            jid, inbound_text="quero falar com uma pessoa de verdade", conversation_id="c1"
+        )
+
+    res = asyncio.run(drive())
+
+    assert res.get("needs_human") is True
+    assert res.get("stage") == "needs_human"
+    assert "equipe" in _texts(res).lower()   # _HANDOFF copy
+
+
+def test_needs_human_short_circuits(monkeypatch):
+    rec = _Recorder()
+    _install_fakes(monkeypatch, rec, intent=Intent.QUESTION)
+    graph = _new_graph()
+    jid = _thread()
+
+    async def drive():
+        await _seed(graph, jid, {
+            "stage": "needs_human",
+            "brief": {"recipient_name": "Joao", "relationship": "esposo"},
+            "extra": {},
+        })
+        return await runner._invoke(jid, inbound_text="como funciona?", conversation_id="c1")
+
+    res = asyncio.run(drive())
+
+    assert res.get("stage") == "needs_human"
+    assert rec.compose_calls == 0            # no auto-reply composed
+    assert not (res.get("outbound") or [])

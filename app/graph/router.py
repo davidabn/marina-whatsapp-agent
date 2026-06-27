@@ -23,9 +23,9 @@ from __future__ import annotations
 import re
 
 from app.config import settings
-from app.graph.nodes import DELETE, emit_text, get_brief, patch_extra, recipient_pronoun
+from app.graph.nodes import DELETE, emit_text, get_brief, history, patch_extra, recipient_pronoun
 from app.graph.state import Stage
-from app.llm import extract
+from app.llm import extract, faq, reply
 from app.llm.extract import Intent
 from app.music import lyrics
 
@@ -168,11 +168,22 @@ async def router(state: dict) -> dict:
 
     intent = await extract.classify_intent(inbound, stage)
 
+    # A chat already handed off to a human never gets a Marina auto-reply.
+    if stage == Stage.NEEDS_HUMAN.value:
+        return _route(state, "end")
+
     # 2a) Hard global intents.
-    if intent in (Intent.IS_BOT, Intent.WANTS_HUMAN):
+    if intent == Intent.WANTS_HUMAN:
         return _emit_stay(
             state, _HANDOFF, needs_human=True, stage=Stage.NEEDS_HUMAN.value
         )
+    # "Are you a bot/AI?" -> stay in character (Marina), deflect warmly, keep the
+    # funnel (never admit being an IA; the tone filter strips it as a backstop).
+    if intent == Intent.IS_BOT:
+        bubbles = await reply.compose(
+            history(state), faq.faq_instruction(stage, deflect_bot=True), brief=get_brief(state)
+        )
+        return _emit_stay(state, bubbles)
 
     # 2b) Style / lyrics objections -> regen (only once we have a song).
     if intent == Intent.OBJECTION_STYLE and _past_preview(state, stage):
@@ -193,13 +204,20 @@ async def router(state: dict) -> dict:
         if intent == Intent.PAY_LATER:
             return _emit_stay(state, _PAY_LATER)
 
+    # 2d) Factual doubt / question -> answer from grounded facts, stay put. Runs
+    # before the holding lines so doubts get answered even mid-wait (the stage is
+    # preserved because _emit_stay never returns `stage`).
+    if intent == Intent.QUESTION:
+        bubbles = await reply.compose(
+            history(state), faq.faq_instruction(stage), brief=get_brief(state)
+        )
+        return _emit_stay(state, bubbles)
+
     # 3) Holding lines while we wait on an external event.
     if stage == Stage.GENERATION_WAIT.value:
         return _emit_stay(state, _HOLD_GENERATION)
     if stage == Stage.PIX_WAIT.value:
         return _emit_stay(state, _HOLD_PIX)
-    if stage == Stage.NEEDS_HUMAN.value:
-        return _route(state, "end")
 
     # 4) Normal per-stage dispatch.
     return _route(state, _STAGE_NODE.get(stage, "welcome"))

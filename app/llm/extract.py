@@ -178,6 +178,7 @@ class Intent(str, Enum):
     IS_BOT = "is_bot"
     WANTS_HUMAN = "wants_human"
     GREETING = "greeting"
+    QUESTION = "question"
 
 
 class _IntentResult(BaseModel):
@@ -197,6 +198,17 @@ de musica personalizada. Escolha UM rotulo:
 - is_bot: pergunta se voce e um robo, uma IA, um atendimento automatico.
 - wants_human: pede para falar com um atendente / pessoa / humano de verdade.
 - greeting: apenas uma saudacao ou abertura ('oi', 'ola', 'tenho interesse').
+- question: uma DUVIDA factual e NEUTRA sobre o produto/processo — como funciona, \
+o que a pessoa recebe, formato, prazo de entrega, formas de pagamento, se a musica \
+e unica/dela pra sempre, se da pra ouvir antes, se da pra pedir mudanca, ou "quanto \
+custa" (pergunta de informacao, SEM reclamar).
+
+PRIORIDADE: se a mensagem reclamar do preco (too_expensive), disser que vai pensar/\
+decidir depois (will_think), quiser pagar depois/amanha (pay_later), nao gostou do \
+estilo/letra (objection_style/objection_lyrics), for so uma saudacao (greeting), \
+pedir um humano (wants_human), ou perguntar se voce e robo/IA (is_bot), use ESSES \
+rotulos — NAO 'question'. Ex: "quanto custa?" (neutro) => question; "ta caro / achei \
+caro" => too_expensive.
 
 Na duvida, responda 'normal'."""
 
