@@ -78,24 +78,34 @@ def make_preview(
                 os.remove(p)
 
 
+def make_full_video(audio: bytes | str, image: bytes | str, **kwargs) -> bytes:
+    """Render the WHOLE track as a vertical 9:16 MP4 (cover + full audio).
+
+    Thin wrapper over `make_video_preview` with `duration=None` (no clamp) — the
+    paid deliverable. Accepts the same keyword tuning (fade_in/out, bitrate, …).
+    """
+    kwargs.setdefault("duration", None)
+    return make_video_preview(audio, image, **kwargs)
+
+
 def make_video_preview(
     audio: bytes | str,
     image: bytes | str,
     *,
     start: float = 0.0,
-    duration: float = 45.0,
+    duration: float | None = 45.0,
     fade_in: float = 1.0,
     fade_out: float = 2.0,
     bitrate: str = "192k",
     width: int = 720,
     height: int = 1280,
 ) -> bytes:
-    """Render a 45s vertical (9:16) MP4 = cover art over a blurred fill of itself
+    """Render a vertical (9:16) MP4 = cover art over a blurred fill of itself
     + faded, loudness-normalized audio.
 
-    `audio`/`image` may be raw bytes or file paths. Returns the MP4 bytes. Used
-    for the WhatsApp preview (a video the customer can watch, kept short so the
-    full song stays the paid deliverable). Temp files are always cleaned.
+    `duration` is the clip length in seconds; pass `None` to render the WHOLE
+    track (the paid full-song deliverable). `audio`/`image` may be raw bytes or
+    file paths. Returns the MP4 bytes. Temp files are always cleaned.
     """
     cleanup: list[str] = []
 
@@ -116,7 +126,9 @@ def make_video_preview(
 
     try:
         total = _probe_duration(audio_path)
-        if start + duration > total:
+        if duration is None:
+            duration = max(0.0, total - start)  # whole remaining track
+        elif start + duration > total:
             start = max(0.0, total - duration)
 
         fade_out_start = max(0.0, duration - fade_out)

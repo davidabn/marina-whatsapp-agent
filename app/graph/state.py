@@ -104,7 +104,8 @@ class ConversationState(TypedDict, total=False):
     kie_task_id: Optional[str]
     variants: list[dict]             # [{id, audio_url, title, image_url}]
     preview_url: Optional[str]
-    full_url: Optional[str]
+    full_url: Optional[str]            # full-song deliverable as a 9:16 video (preferred)
+    full_audio_url: Optional[str]      # full-song audio fallback (no cover / ffmpeg failed)
     lyrics_full: Optional[str]
     chosen_variant: Optional[str]
     order_id: Optional[str]
