@@ -86,6 +86,8 @@ class MercadoPagoProvider(PaymentProvider):
         description: str,
         external_ref: str,
         payer_email: str | None = None,
+        *,
+        customer: dict[str, Any] | None = None,  # unused by MP (PIX has no checkout)
     ) -> PixCharge:
         body = {
             "transaction_amount": amount_cents / 100,

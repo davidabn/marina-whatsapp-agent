@@ -58,9 +58,18 @@ class Settings(BaseSettings):
     evolution_instance: str = ""
     evolution_webhook_token: str = ""
 
-    # Mercado Pago
+    # Payments — which provider the offer/checkout uses ("infinitepay" | "mercadopago")
+    payment_provider: str = "infinitepay"
+
+    # Mercado Pago (legacy PIX path — kept dormant)
     mp_access_token: str = ""
     mp_webhook_secret: str = ""
+
+    # InfinitePay Checkout — the only credential is the InfiniteTag (handle, no '$').
+    # There is no API key; the public webhook is re-confirmed via /payment_check.
+    infinitepay_handle: str = ""
+    infinitepay_api_base: str = "https://api.checkout.infinitepay.io"
+    infinitepay_redirect_url: str = ""   # where the payer lands after paying (empty => none sent)
 
     # Supabase
     supabase_url: str = ""

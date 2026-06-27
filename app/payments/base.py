@@ -20,10 +20,15 @@ class PixCharge:
     """Normalized PIX charge, decoupled from any provider's wire format.
 
     Fields:
-        payment_id:  provider payment id, always stringified.
+        payment_id:  provider payment id, always stringified. For checkout-link
+                     providers (InfinitePay) this carries the `order_nsu` we
+                     generated and matches the webhook back to the order.
         copia_cola:  the PIX "copia e cola" / qr_code text the user pastes.
+                     For checkout-link providers this mirrors `checkout_url`.
         qr_base64:   base64 PNG of the QR image, or None if the provider
                      did not return one.
+        checkout_url: a hosted checkout link the customer opens to pay, or ""
+                     for pure-PIX providers that only return a copia-e-cola.
         status:      provider-native status string (e.g. MP: "pending",
                      "approved", "rejected", "cancelled"). Use
                      `PaymentProvider.is_approved()` to interpret it.
@@ -37,6 +42,7 @@ class PixCharge:
     qr_base64: str | None
     status: str
     amount_cents: int
+    checkout_url: str = ""
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -56,8 +62,16 @@ class PaymentProvider(ABC):
         description: str,
         external_ref: str,
         payer_email: str | None = None,
+        *,
+        customer: dict[str, Any] | None = None,
     ) -> PixCharge:
-        """Create a dynamic PIX charge and return it (with copia-e-cola + QR)."""
+        """Create a dynamic charge and return it.
+
+        For PIX providers this carries the copia-e-cola + QR. For checkout-link
+        providers (InfinitePay) it carries `checkout_url`. `customer` (optional
+        name/phone/email) personalizes the hosted checkout when the provider
+        supports it; PIX providers may ignore it.
+        """
         raise NotImplementedError
 
     @abstractmethod
