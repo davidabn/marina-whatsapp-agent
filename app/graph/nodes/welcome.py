@@ -13,9 +13,12 @@ from app.llm import reply
 _INSTRUCTION = (
     "Esta e a PRIMEIRA resposta para um lead que acabou de chegar. "
     "Cumprimente com carinho (algo como 'Oii! Que bom te ver aqui') e, em outra "
-    "bolha, pergunte com curiosidade genuina pra QUEM e a musica especial (a "
-    "pessoa que vai ser presenteada). Nao pergunte nada sobre o cliente (nome, "
-    "idade, cidade) — so sobre a pessoa amada. Mensagens curtas."
+    "bolha, faca UMA pergunta direta: o NOME da pessoa que vai receber a musica "
+    "(ex.: 'qual o nome da pessoa que vai receber essa musica?'). "
+    "NAO faca duas perguntas que parecam a mesma coisa — nao pergunte 'pra quem e' "
+    "E 'qual o nome' juntos; basta pedir o nome. NAO pergunte ainda a relacao "
+    "(isso vem depois) nem nada sobre o cliente (nome dele, idade, cidade). "
+    "Mensagens curtas."
 )
 
 

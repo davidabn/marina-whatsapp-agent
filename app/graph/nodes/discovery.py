@@ -65,9 +65,12 @@ async def discovery_recipient(state: dict) -> dict:
         instruction = (
             f"Voce ja sabe que a musica e pra {brief.recipient_name} (relacao: "
             f"{_rel(brief)}). Reaja com carinho espelhando o NOME ('{brief.recipient_name} "
-            "que linda', 'aaah que amor'). Depois, em outra bolha, faca a pergunta "
-            "emocional aberta: o que fez essa pessoa se apaixonar / o que "
-            f"{brief.recipient_name} tem de especial que ninguem mais tem. Curto."
+            "que nome lindo', 'aaah que amor'). Depois, em outra bolha, faca uma "
+            "pergunta emocional aberta sobre a historia deles: o que torna "
+            f"{brief.recipient_name} tao especial pra ela / o que voces tem que e so "
+            "de voces / um momento que marcou. ADAPTE ao tipo de relacao — NAO "
+            "assuma que e um amor romantico (pode ser amigo, primo, irma, mae, pai). "
+            "NUNCA use 'se apaixonar' / 'paixao' quando nao for namoro/casamento. Curto."
         )
         bubbles = await reply.compose(history(state), instruction, brief=brief)
         msgs = emit_text(state, bubbles)
@@ -80,8 +83,9 @@ async def discovery_recipient(state: dict) -> dict:
         )
     else:
         instruction = (
-            "Ainda nao sabemos pra quem e a musica. Pergunte com curiosidade e "
-            "carinho pra quem ela e (o nome e a relacao). Curto."
+            "Ainda nao sabemos o nome. Pergunte com carinho SO o nome da pessoa "
+            "que vai receber a musica — UMA pergunta direta, sem juntar com a "
+            "relacao (isso vem no proximo turno). Curto."
         )
     bubbles = await reply.compose(history(state), instruction, brief=brief)
     msgs = emit_text(state, bubbles)

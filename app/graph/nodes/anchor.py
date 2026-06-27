@@ -50,7 +50,7 @@ def _explanation_bubbles(brief) -> list[str]:
     return [
         f"Deixa eu te explicar rapidinho como funciona pra tu ja ficar {tranq}:",
         "1. Eu vou criar a musica com a historia de voces",
-        "2. Te mando uma previa pra tu sentir como ficou (da pra ver uma vez 👀)",
+        "2. Te mando alguns segundos de previa pra tu sentir como ficou 💛",
         f"3. Quando tu gostar, e so finalizar o pagamento (R$ {price}) num link "
         f"rapidinho que dai eu te mando a musica completa, com a letra inteira, "
         f"pra voce enviar pra {name}",
